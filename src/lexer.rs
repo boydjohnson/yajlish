@@ -76,13 +76,6 @@ fn parse_whitespace(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
 
 named!(whitespace, is_a!(" \n\r\t"));
 
-fn is_maybe_whitespace(data: &[u8]) -> IResult<&[u8], Option<&[u8]>> {
-    match whitespace(data) {
-        Err(_) => Ok((data, None)),
-        Ok((rest, ws)) => Ok((rest, Some(ws))),
-    }
-}
-
 named!(parse_colon_raw, tag!(":"));
 
 named!(parse_comma_raw, tag!(","));
@@ -186,18 +179,6 @@ fn parse_string(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_is_maybe_whitespace() {
-        assert_eq!(
-            is_maybe_whitespace(b"87594.8"),
-            Ok(("87594.8".as_bytes(), None))
-        );
-        assert_eq!(
-            is_maybe_whitespace(b" foo: bar"),
-            Ok(("foo: bar".as_bytes(), Some(" ".as_bytes())))
-        );
-    }
 
     #[test]
     fn test_parse_double() {
