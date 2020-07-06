@@ -10,7 +10,7 @@ before_script:
   - rustup component add clippy
   - rustup component add rustfmt
 script:
-  - cargo build --verbose
-  - cargo test --verbose
+  - cargo build --all-features --verbose
+  - cargo test --all-features --verbose
   - cargo fmt -- --check
-  - cargo clippy
+  - cargo clippy --all-features
