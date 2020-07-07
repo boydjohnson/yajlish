@@ -15,7 +15,10 @@
 * ------------------------------------------------------------------------------
 */
 
+use std::collections::VecDeque;
+
 /// The Status that each Handler method returns.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Status {
     /// Continue calling methods on the Handler.
     Continue,
@@ -23,21 +26,107 @@ pub enum Status {
     Abort,
 }
 
+/// Brackets and Braces to keep track of.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Enclosing {
+    LeftBrace,
+    LeftBracket,
+    RightBrace,
+    RightBracket,
+}
+
+/// The state that the parser is in.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ParserStatus {
+    Start,
+    ParseComplete,
+    ParseError,
+    LexicalError,
+    MapStart,
+    MapSep,
+    MapNeedVal,
+    MapGotVal,
+    MapNeedKey,
+    ArrayStart,
+    ArrayGotVal,
+    ArrayNeedVal,
+    GotValue,
+}
+
 /// The context passed to each Handler function. Context gives
 /// basic information about where it is at in the json document.
-pub struct Context {}
+pub struct Context {
+    stack: VecDeque<Enclosing>,
+
+    status: ParserStatus,
+    num_open_braces: usize,
+    num_open_brackets: usize,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Context {
+            stack: VecDeque::default(),
+            status: ParserStatus::Start,
+
+            num_open_braces: 0,
+            num_open_brackets: 0,
+        }
+    }
+}
 
 impl Context {
     /// The number of left brackets ([) encountered without
     /// corresponding right brackets, at this point in the parse.
     pub fn num_open_brackets(&self) -> usize {
-        unimplemented!();
+        self.num_open_brackets
     }
 
     /// The number of left braces ({) encountered without
     /// corresponding right braces, at this point in the parse.
     pub fn num_open_braces(&self) -> usize {
-        unimplemented!();
+        self.num_open_braces
+    }
+
+    /// The `ParserStatus`.
+    pub fn parser_status(&self) -> ParserStatus {
+        self.status
+    }
+
+    /// Update the parser status.
+    pub(crate) fn update_status(&mut self, status: ParserStatus) {
+        self.status = status;
+    }
+
+    /// Add an enclosing bracket, brace to the stack.
+    pub(crate) fn add_enclosing(&mut self, enclosing: Enclosing) {
+        self.stack.push_back(enclosing);
+    }
+
+    /// Read the last Enclosing.
+    pub fn last_enclosing(&self) -> Option<Enclosing> {
+        self.stack.back().copied()
+    }
+
+    /// Remove an enclosing bracket, brace from the stack.
+    pub(crate) fn remove_last_enclosing(&mut self) -> Option<Enclosing> {
+        self.stack.pop_back()
+    }
+
+    pub(crate) fn inc_braces(&mut self) {
+        self.num_open_braces += 1;
+    }
+
+    pub(crate) fn dec_braces(&mut self) {
+        self.num_open_braces -= 1;
+    }
+
+    pub(crate) fn inc_brackets(&mut self) {
+        self.num_open_brackets += 1;
+    }
+
+    pub(crate) fn dec_brackets(&mut self) {
+        self.num_open_brackets -= 1;
     }
 }
 
