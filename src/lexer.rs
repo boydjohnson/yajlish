@@ -145,7 +145,11 @@ fn return_integer_as_bytes(data: &[u8]) -> IResult<&[u8], &[u8]> {
 }
 
 fn is_digit_or_num_like(c: u8) -> bool {
-    is_digit(c) || char::from(c) == 'E' || char::from(c) == 'e' || char::from(c) == '.'
+    is_digit(c)
+        || char::from(c) == 'E'
+        || char::from(c) == 'e'
+        || char::from(c) == '.'
+        || char::from(c) == '-'
 }
 
 fn parse_integer(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
