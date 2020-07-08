@@ -148,7 +148,7 @@ fn parse_double(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
 }
 
 fn return_integer_as_bytes(data: &[u8]) -> IResult<&[u8], &[u8]> {
-    take_while(|d| is_digit_or_num_like(d))(data)
+    take_while(is_digit_or_num_like)(data)
 }
 
 fn is_digit_or_num_like(c: u8) -> bool {
