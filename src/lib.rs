@@ -17,6 +17,60 @@
 
 #![deny(missing_docs)]
 //! yajlish is a low-level, event-based json parser based (loosely) on [yajl](https://github.com/yajl/yajl).
+//! Use
+//! ```
+//!     use yajlish::{Context, Handler, Status};
+//!
+//!     pub struct FooCountHandler {
+//!         count: usize,
+//!     }
+//!
+//!     impl Handler for FooCountHandler {
+//!         
+//!         fn handle_map_key(&mut self, _ctx: &Context, key: &str) -> Status {
+//!             if key == "foo" {
+//!                 self.count += 1;
+//!             }
+//!             Status::Continue
+//!         }
+//!     
+//!         fn handle_null(&mut self, _ctx: &Context) -> Status {
+//!             Status::Continue
+//!         }
+//!
+//!         fn handle_bool(&mut self, _ctx: &Context, boolean: bool) -> Status {
+//!             Status::Continue
+//!         }
+//!
+//!         fn handle_double(&mut self, _ctx: &Context, val: f64) -> Status {
+//!             Status::Continue
+//!         }
+//!         
+//!         fn handle_int(&mut self, _ctx: &Context, val: i64) -> Status {
+//!             Status::Continue
+//!         }
+//!
+//!         fn handle_string(&mut self, _ctx: &Context, val: &str) -> Status {
+//!             Status::Continue
+//!         }
+//!
+//!         fn handle_start_map(&mut self, _ctx: &Context) -> Status {
+//!             Status::Continue
+//!         }
+//!         
+//!         fn handle_start_array(&mut self, _ctx: &Context) -> Status {
+//!             Status::Continue
+//!         }
+//!
+//!         fn handle_end_map(&mut self, _ctx: &Context) -> Status {
+//!             Status::Continue
+//!         }
+//!
+//!         fn handle_end_array(&mut self, _ctx: &Context) -> Status {
+//!             Status::Continue
+//!         }
+//!     }
+//! ```
 
 mod common;
 mod lexer;
