@@ -4,4 +4,3 @@ string: '松江'
 key: 'asakusa'
 string: '浅草'
 map close '}'
-memory leaks:	0

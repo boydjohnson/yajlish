@@ -2,4 +2,3 @@ map open '{'
 key: 'U+10ABCD'
 string: '􊯍'
 map close '}'
-memory leaks:	0

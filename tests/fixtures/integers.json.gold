@@ -11,4 +11,3 @@ integer: -123456789
 integer: 2147483647
 integer: -2147483647
 array close ']'
-memory leaks:	0

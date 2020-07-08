@@ -2,4 +2,3 @@ array open '['
 string: 'foo'
 string: 'bar'
 parse error: premature EOF
-memory leaks:	0
