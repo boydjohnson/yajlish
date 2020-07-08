@@ -1,0 +1,20 @@
+array open '['
+array open '['
+integer: 1
+integer: 2
+integer: 3
+array close ']'
+array open '['
+bool: true
+string: 'true, null'
+bool: false
+array close ']'
+map open '{'
+key: data
+array open '['
+double: 9.5
+double: 0.0000000001
+double: 500
+array close ']'
+map close '}'
+array close ']'

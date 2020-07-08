@@ -1,0 +1,34 @@
+array open '['
+array open '['
+array open '['
+array close ']'
+map open '{'
+key: foo
+array open '['
+array open '['
+bool: true
+double: 88.975
+array close ']'
+bool: false
+null
+array close ']'
+key: data
+integer: 105
+map close '}'
+array close ']'
+array open '['
+map open '{'
+key: data
+array open '['
+array open '['
+array open '['
+bool: true
+integer: 107
+integer: 975
+array close ']'
+integer: 107
+array close ']'
+array close ']'
+map close '}'
+array close ']'
+array close ']'
