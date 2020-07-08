@@ -1,0 +1,16 @@
+map open '{'
+key: foo
+map open '{'
+key: bar
+array open '['
+map open '{'
+key: data
+array open '['
+null
+bool: false
+string: 'null'
+array close ']'
+map close '}'
+array close ']'
+map close '}'
+map close '}'
