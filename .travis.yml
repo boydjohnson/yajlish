@@ -1,0 +1,17 @@
+language: rust
+rust:
+  - stable
+  - beta
+  - nightly
+jobs:
+  allow_failures:
+    - rust: nightly
+before_script:
+  - rustup component add clippy
+  - rustup toolchain add nightly
+  - rustup component add rustfmt --toolchain nightly
+script:
+  - cargo build --verbose
+  - cargo test --verbose
+  - cargo +nightly fmt -- --check
+  - cargo clippy
