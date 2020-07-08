@@ -17,10 +17,13 @@
 
 use nom::{
     alt,
-    bytes::streaming::{tag, take_while},
+    bytes::{
+        complete,
+        streaming::{tag, take_while},
+    },
     character::is_digit,
     combinator::{map_res, opt},
-    is_a, named,
+    named,
     number::streaming::double,
     tag, IResult,
 };
@@ -74,7 +77,9 @@ fn parse_whitespace(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
     whitespace(data).map(|(rest, _)| (rest, JsonPrimitive::WS))
 }
 
-named!(whitespace, is_a!(" \n\r\t"));
+fn whitespace(data: &[u8]) -> IResult<&[u8], &[u8]> {
+    complete::is_a(" \n\r\t")(data)
+}
 
 named!(parse_colon_raw, tag!(":"));
 
