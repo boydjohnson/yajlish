@@ -55,6 +55,7 @@ pub enum ParserStatus {
 
 /// The context passed to each Handler function. Context gives
 /// basic information about where it is at in the json document.
+#[derive(Debug)]
 pub struct Context {
     stack: VecDeque<Enclosing>,
 
