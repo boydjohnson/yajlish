@@ -17,14 +17,17 @@ pub fn assert_output_equals(mut input: &[u8], output: &[u8]) {
     assert_eq!(out, output);
 }
 
+#[allow(unused)]
 fn read_input_to_bytes(p: &str, s: &str) -> String {
     std::fs::read_to_string(format!("tests/{}/{}", p, s)).unwrap()
 }
 
+#[allow(unused)]
 fn read_output_to_bytes(p: &str, s: &str) -> String {
     std::fs::read_to_string(format!("tests/{}/{}.gold", p, s)).unwrap()
 }
 
+#[allow(unused)]
 pub fn test_fixture(p: &str, s: &str) {
     let input = read_input_to_bytes(p, s);
     let output = read_output_to_bytes(p, s);
