@@ -8,10 +8,9 @@ jobs:
     - rust: nightly
 before_script:
   - rustup component add clippy
-  - rustup toolchain add nightly
-  - rustup component add rustfmt --toolchain nightly
+  - rustup component add rustfmt
 script:
   - cargo build --verbose
   - cargo test --verbose
-  - cargo +nightly fmt -- --check
+  - cargo fmt -- --check
   - cargo clippy
