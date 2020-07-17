@@ -142,7 +142,9 @@ impl<'a> Parser<'a> {
                     (Some(status), Some(buffer_length - rest.len()))
                 }
                 Ok((rest, JsonPrimitive::JSONString(s))) => {
-                    if context.parser_status() == ParserStatus::ArrayNeedVal {
+                    if context.parser_status() == ParserStatus::ArrayNeedVal
+                        || context.parser_status() == ParserStatus::ArrayStart
+                    {
                         let status = handler.handle_string(context, &s);
                         context.update_status(ParserStatus::ArrayGotVal);
                         (Some(status), Some(buffer_length - rest.len()))
