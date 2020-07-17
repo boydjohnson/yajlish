@@ -22,9 +22,11 @@ use nom::{
         streaming::{tag, take_while},
     },
     character::is_digit,
-    combinator::{map_res, opt},
+    combinator::{map, map_res, opt},
     named,
     number::streaming::double,
+    regex::bytes::Regex,
+    regexp::bytes::re_find,
     tag, IResult,
 };
 
@@ -172,17 +174,22 @@ fn parse_integer(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
         .map_err(|_| nom::Err::Error((b.0, nom::error::ErrorKind::Digit)))
 }
 
-fn parse_string(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
-    let first_parenthesis = parse_quotation(data)?;
+fn parse_string_raw(data: &[u8]) -> Result<String, std::str::Utf8Error> {
+    std::str::from_utf8(data)
+        .map(|s| s.trim_end_matches('\"'))
+        .map(|s| s.to_owned())
+}
 
-    map_res(take_while(|d: u8| (d as char) != '"'), |b: &[u8]| {
-        std::str::from_utf8(b)
-            .map_err(|_| nom::Err::Failure((b, nom::error::ErrorKind::AlphaNumeric)))
-    })(first_parenthesis.0)
-    .map(|(rest, val)| {
-        let (rest, _) = parse_quotation(rest)?;
-        Ok((rest, JsonPrimitive::JSONString(val.to_owned())))
-    })?
+fn parse_string(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
+    let q = parse_quotation(data)?;
+
+    map(
+        map_res(
+            re_find(Regex::new(r#"[^"\\]*""#).unwrap()),
+            parse_string_raw,
+        ),
+        JsonPrimitive::JSONString,
+    )(q.0)
 }
 
 #[cfg(test)]
