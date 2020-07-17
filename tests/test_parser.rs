@@ -51,3 +51,11 @@ fn test_complex_array() {
 fn test_bool_with_newline() {
     assert_output_equals("true\n ".as_bytes(), "bool: true\n".as_bytes());
 }
+
+#[test]
+fn test_array_with_string() {
+    assert_output_equals(
+        "[\"foo\"]".as_bytes(),
+        "array open '['\nstring: 'foo'\narray close ']'\n".as_bytes(),
+    );
+}
