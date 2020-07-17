@@ -15,6 +15,7 @@
 * ------------------------------------------------------------------------------
 */
 
+use lazy_static::lazy_static;
 use nom::{
     alt,
     bytes::{
@@ -29,6 +30,10 @@ use nom::{
     regexp::bytes::re_find,
     tag, IResult,
 };
+
+lazy_static! {
+    static ref RE: Regex = Regex::new(r#"[^"\\]*""#).unwrap();
+}
 
 /// Primitive tokens in json.
 #[derive(Debug, PartialEq)]
@@ -184,10 +189,7 @@ fn parse_string(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
     let q = parse_quotation(data)?;
 
     map(
-        map_res(
-            re_find(Regex::new(r#"[^"\\]*""#).unwrap()),
-            parse_string_raw,
-        ),
+        map_res(re_find(RE.clone()), parse_string_raw),
         JsonPrimitive::JSONString,
     )(q.0)
 }
