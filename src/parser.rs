@@ -25,17 +25,17 @@ use crate::{
 use std::io::BufRead;
 
 /// Main Parser struct.
-pub struct Parser<'a> {
-    handler: &'a mut dyn Handler,
+pub struct Parser<'a, H> {
+    handler: &'a mut H,
     context: Context,
 
     buffer: Vec<u8>,
     buffer_offset: usize,
 }
 
-impl<'a> Parser<'a> {
+impl<'a, H: Handler> Parser<'a, H> {
     /// Construct a new Parser from a Handler.
-    pub fn new(handler: &'a mut dyn Handler) -> Self {
+    pub fn new(handler: &'a mut H) -> Self {
         Parser {
             handler,
             context: Context::default(),
