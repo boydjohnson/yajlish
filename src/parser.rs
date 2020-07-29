@@ -47,8 +47,6 @@ impl<'a> Parser<'a> {
     pub fn parse<B: BufRead>(&mut self, read: &mut B) -> Result<(), ParseError> {
         let context = &mut self.context;
 
-        let handler = &mut self.handler;
-
         while match context.parser_status() {
             ParserStatus::ParseComplete | ParserStatus::LexicalError => false,
             _ => true,
@@ -68,7 +66,7 @@ impl<'a> Parser<'a> {
             let (status, consume_length) = match parse(&buffer) {
                 Ok((rest, JsonPrimitive::WS)) => (None, Some(buffer_length - rest.len())),
                 Ok((rest, JsonPrimitive::RightBracket)) => {
-                    let status = handler.handle_end_array(context);
+                    let status = self.handler.handle_end_array(context);
                     if context.last_enclosing() == Some(Enclosing::LeftBracket) {
                         context.remove_last_enclosing();
                         context.dec_brackets();
@@ -86,7 +84,7 @@ impl<'a> Parser<'a> {
                     (Some(status), Some(buffer_length - rest.len()))
                 }
                 Ok((rest, JsonPrimitive::RightBrace)) => {
-                    let status = handler.handle_end_map(context);
+                    let status = self.handler.handle_end_map(context);
 
                     if context.last_enclosing() == Some(Enclosing::LeftBrace) {
                         context.remove_last_enclosing();
@@ -106,14 +104,14 @@ impl<'a> Parser<'a> {
                     (Some(status), Some(buffer_length - rest.len()))
                 }
                 Ok((rest, JsonPrimitive::LeftBracket)) => {
-                    let status = handler.handle_start_array(context);
+                    let status = self.handler.handle_start_array(context);
                     context.add_enclosing(Enclosing::LeftBracket);
                     context.inc_brackets();
                     context.update_status(ParserStatus::ArrayStart);
                     (Some(status), Some(buffer_length - rest.len()))
                 }
                 Ok((rest, JsonPrimitive::LeftBrace)) => {
-                    let status = handler.handle_start_map(context);
+                    let status = self.handler.handle_start_map(context);
                     context.add_enclosing(Enclosing::LeftBrace);
                     context.inc_braces();
                     context.update_status(ParserStatus::MapStart);
@@ -121,21 +119,21 @@ impl<'a> Parser<'a> {
                     (Some(status), Some(buffer_length - rest.len()))
                 }
                 Ok((rest, JsonPrimitive::Null)) => {
-                    let status = handler.handle_null(context);
+                    let status = self.handler.handle_null(context);
 
                     update_context_status_value(context);
 
                     (Some(status), Some(buffer_length - rest.len()))
                 }
                 Ok((rest, JsonPrimitive::Integer(num))) => {
-                    let status = handler.handle_int(context, num);
+                    let status = self.handler.handle_int(context, num);
 
                     update_context_status_value(context);
 
                     (Some(status), Some(buffer_length - rest.len()))
                 }
                 Ok((rest, JsonPrimitive::Double(num))) => {
-                    let status = handler.handle_double(context, num);
+                    let status = self.handler.handle_double(context, num);
 
                     update_context_status_value(context);
 
@@ -145,21 +143,21 @@ impl<'a> Parser<'a> {
                     if context.parser_status() == ParserStatus::ArrayNeedVal
                         || context.parser_status() == ParserStatus::ArrayStart
                     {
-                        let status = handler.handle_string(context, &s);
+                        let status = self.handler.handle_string(context, &s);
                         context.update_status(ParserStatus::ArrayGotVal);
                         (Some(status), Some(buffer_length - rest.len()))
                     } else if context.parser_status() == ParserStatus::MapNeedVal {
-                        let status = handler.handle_string(context, &s);
+                        let status = self.handler.handle_string(context, &s);
                         context.update_status(ParserStatus::MapGotVal);
                         (Some(status), Some(buffer_length - rest.len()))
                     } else if context.parser_status() == ParserStatus::Start {
-                        let status = handler.handle_string(context, &s);
+                        let status = self.handler.handle_string(context, &s);
                         context.update_status(ParserStatus::GotValue);
                         (Some(status), Some(buffer_length - rest.len()))
                     } else if context.parser_status() == ParserStatus::MapNeedKey
                         || context.parser_status() == ParserStatus::MapStart
                     {
-                        let status = handler.handle_map_key(context, &s);
+                        let status = self.handler.handle_map_key(context, &s);
                         context.update_status(ParserStatus::MapSep);
                         (Some(status), Some(buffer_length - rest.len()))
                     } else {
@@ -168,7 +166,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Ok((rest, JsonPrimitive::Boolean(boolean))) => {
-                    let status = handler.handle_bool(context, boolean);
+                    let status = self.handler.handle_bool(context, boolean);
 
                     update_context_status_value(context);
 
