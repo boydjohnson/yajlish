@@ -20,12 +20,12 @@ use nom::{
     alt,
     bytes::{
         complete,
-        streaming::{tag, take_while},
+        streaming::{tag, take_while1},
     },
     character::is_digit,
     combinator::{map, map_res, opt},
     named,
-    number::streaming::double,
+    number::complete::double,
     regex::bytes::Regex,
     regexp::bytes::re_find,
     tag, IResult,
@@ -149,11 +149,16 @@ fn parse_boolean(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
 }
 
 fn parse_double(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
-    double(data).map(|(rest, num)| (rest, JsonPrimitive::Double(num)))
+    let (rest, first) = take_while1(is_digit_or_num_like)(data)?;
+    parse_double_raw(first).map(|(_, v)| (rest, v))
+}
+
+fn parse_double_raw(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
+    double(data).map(|(rest, i)| (rest, JsonPrimitive::Double(i)))
 }
 
 fn return_integer_as_bytes(data: &[u8]) -> IResult<&[u8], &[u8]> {
-    take_while(is_digit_or_num_like)(data)
+    take_while1(is_digit_or_num_like)(data)
 }
 
 fn is_digit_or_num_like(c: u8) -> bool {
@@ -215,9 +220,13 @@ mod tests {
             parse_double(b"\"foo\": \"bar\", \"n\": 9.5"),
             Err(nom::Err::Error((
                 "\"foo\": \"bar\", \"n\": 9.5".as_bytes(),
-                nom::error::ErrorKind::Float
+                nom::error::ErrorKind::TakeWhile1
             )))
         );
+        assert_eq!(
+            parse_double(b"42."),
+            Err(nom::Err::Incomplete(nom::Needed::new(1)))
+        )
     }
 
     #[test]
@@ -231,13 +240,17 @@ mod tests {
             parse_integer(b"foo: bar, "),
             Err(nom::Err::Error((
                 "foo: bar, ".as_bytes(),
-                nom::error::ErrorKind::Digit
+                nom::error::ErrorKind::TakeWhile1
             )))
         );
 
         assert_eq!(
             parse_integer(b"-78, foo: bar"),
             Ok((", foo: bar".as_bytes(), JsonPrimitive::Integer(-78)))
+        );
+        assert_eq!(
+            parse_integer(b"42."),
+            Err(nom::Err::Incomplete(nom::Needed::new(1)))
         )
     }
 
@@ -328,5 +341,9 @@ mod tests {
             parse(b"9.5, foo: bar"),
             Ok((", foo: bar".as_bytes(), JsonPrimitive::Double(9.5)))
         );
+        assert_eq!(
+            parse(b"42."),
+            Err(nom::Err::Incomplete(nom::Needed::new(1)))
+        )
     }
 }
