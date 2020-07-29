@@ -28,6 +28,9 @@ use std::io::BufRead;
 pub struct Parser<'a> {
     handler: &'a mut dyn Handler,
     context: Context,
+
+    buffer: Vec<u8>,
+    buffer_offset: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -36,6 +39,8 @@ impl<'a> Parser<'a> {
         Parser {
             handler,
             context: Context::default(),
+            buffer: vec![],
+            buffer_offset: 0,
         }
     }
 
@@ -56,14 +61,22 @@ impl<'a> Parser<'a> {
                 Err(err) => return Err(ParseError::ReadError(err.to_string())),
             };
 
-            if buffer.is_empty() {
+            let buffer_length = buffer.len();
+
+            self.buffer.extend_from_slice(buffer);
+
+            read.consume(buffer_length);
+
+            if buffer_length == 0
+                && (self.buffer.is_empty() || self.buffer_offset >= self.buffer.len())
+            {
                 context.update_status(ParserStatus::ParseComplete);
                 return Ok(());
             }
 
-            let buffer_length = buffer.len();
+            let buffer_length = self.buffer[self.buffer_offset..].len();
 
-            let (status, consume_length) = match parse(&buffer) {
+            let (status, consume_length) = match parse(&self.buffer[self.buffer_offset..]) {
                 Ok((rest, JsonPrimitive::WS)) => (None, Some(buffer_length - rest.len())),
                 Ok((rest, JsonPrimitive::RightBracket)) => {
                     let status = self.handler.handle_end_array(context);
@@ -191,14 +204,16 @@ impl<'a> Parser<'a> {
 
                     (None, Some(buffer_length - rest.len()))
                 }
-                Err(nom::Err::Error(_)) | Err(_) => {
-                    context.update_status(ParserStatus::ParseError);
-                    (None, None)
-                }
+                Err(_) => (None, None),
             };
 
             if let Some(consume_length) = consume_length {
-                read.consume(consume_length);
+                self.buffer_offset += consume_length;
+            }
+
+            if self.buffer_offset > 1_000_000_000 {
+                self.buffer.drain(0..self.buffer_offset);
+                self.buffer_offset = 0;
             }
 
             if status == Some(Status::Abort) {
