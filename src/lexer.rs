@@ -15,25 +15,18 @@
 * ------------------------------------------------------------------------------
 */
 
-use lazy_static::lazy_static;
 use nom::{
     alt,
     bytes::{
         complete,
-        streaming::{tag, take_while1},
+        streaming::{tag, take_while, take_while1},
     },
     character::is_digit,
     combinator::{map, map_res, opt},
     named,
     number::complete::double,
-    regex::bytes::Regex,
-    regexp::bytes::re_find,
     tag, IResult,
 };
-
-lazy_static! {
-    static ref RE: Regex = Regex::new(r#"[^"\\]*""#).unwrap();
-}
 
 /// Primitive tokens in json.
 #[derive(Debug, PartialEq)]
@@ -62,6 +55,89 @@ pub enum JsonPrimitive {
     Boolean(bool),
     /// Encountered whitespace
     WS,
+}
+
+pub fn parse_start(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
+    let v = parse_whitespace(data);
+    if v.is_ok() {
+        return v;
+    }
+    if let Err(nom::Err::Incomplete(_)) = v {
+        return v;
+    }
+
+    let v = parse_left_brace(data);
+    if v.is_ok() {
+        return v;
+    }
+    if let Err(nom::Err::Incomplete(_)) = v {
+        return v;
+    }
+
+    let v = parse_left_bracket(data);
+    if v.is_ok() {
+        return v;
+    }
+    if let Err(nom::Err::Incomplete(_)) = v {
+        return v;
+    }
+    let v = parse_right_brace(data);
+    if v.is_ok() {
+        return v;
+    }
+    if let Err(nom::Err::Incomplete(_)) = v {
+        return v;
+    }
+    let v = parse_right_bracket(data);
+    if v.is_ok() {
+        return v;
+    }
+    if let Err(nom::Err::Incomplete(_)) = v {
+        return v;
+    }
+    let v = parse_comma(data);
+    if v.is_ok() {
+        return v;
+    }
+    if let Err(nom::Err::Incomplete(_)) = v {
+        return v;
+    }
+
+    let v = parse_colon(data);
+    if v.is_ok() {
+        return v;
+    }
+    if let Err(nom::Err::Incomplete(_)) = v {
+        return v;
+    }
+
+    let v = parse_string(data);
+    if v.is_ok() {
+        return v;
+    }
+
+    let v = parse_boolean(data);
+    if v.is_ok() {
+        return v;
+    }
+    if let Err(nom::Err::Incomplete(_)) = v {
+        return v;
+    }
+
+    let v = parse_null(data);
+    if v.is_ok() {
+        return v;
+    }
+    if let Err(nom::Err::Incomplete(_)) = v {
+        return v;
+    }
+
+    let v = parse_integer(data);
+    if v.is_ok() {
+        return v;
+    }
+
+    parse_double(data)
 }
 
 named!(pub parse<&[u8], JsonPrimitive>,
@@ -186,17 +262,29 @@ fn parse_integer(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
 
 fn parse_string_raw(data: &[u8]) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(data)
-        .map(|s| s.trim_end_matches('\"'))
+        .map(|s| s.trim_matches('\"'))
         .map(|s| s.to_owned())
 }
 
 fn parse_string(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
     let q = parse_quotation(data)?;
-
-    map(
-        map_res(re_find(RE.clone()), parse_string_raw),
+    let v = map(
+        map_res(take_while(|d| char::from(d) != '"'), parse_string_raw),
         JsonPrimitive::JSONString,
     )(q.0)
+    .map_err(|e| {
+        if let nom::Err::Error((_, ek)) = e {
+            return nom::Err::Error((data, ek));
+        }
+        e
+    })?;
+    let last = tag("\"")(v.0).map_err(|e| {
+        if let nom::Err::Error((_, ek)) = e {
+            return nom::Err::Error((data, ek));
+        }
+        e
+    })?;
+    Ok((last.0, v.1))
 }
 
 #[cfg(test)]
@@ -268,6 +356,19 @@ mod tests {
             Ok((
                 "".as_bytes(),
                 JsonPrimitive::JSONString("diggity❤❤❤❤❤❤❤❤❤❤".to_owned())
+            ))
+        );
+
+        assert_eq!(
+            parse_string(b"\"\""),
+            Ok(("".as_bytes(), JsonPrimitive::JSONString("".to_owned())))
+        );
+
+        assert_eq!(
+            parse_string(b"\"\": null, \"\": false"),
+            Ok((
+                ": null, \"\": false".as_bytes(),
+                JsonPrimitive::JSONString("".to_owned())
             ))
         );
     }
@@ -344,6 +445,59 @@ mod tests {
         assert_eq!(
             parse(b"42."),
             Err(nom::Err::Incomplete(nom::Needed::new(1)))
-        )
+        );
+        assert_eq!(
+            parse(b"[{ \"\": null }]"),
+            Ok(("{ \"\": null }]".as_bytes(), JsonPrimitive::LeftBracket))
+        );
+        assert_eq!(
+            parse(b"{ \"\": null }]"),
+            Ok((" \"\": null }]".as_bytes(), JsonPrimitive::LeftBrace))
+        );
+        assert_eq!(
+            parse(b" \"\": null }]"),
+            Ok(("\"\": null }]".as_bytes(), JsonPrimitive::WS))
+        );
+        assert_eq!(
+            parse(b"\"\": null }]"),
+            Ok((
+                ": null }]".as_bytes(),
+                JsonPrimitive::JSONString("".to_owned())
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_start() {
+        assert_eq!(
+            parse_start(b"nul"),
+            Err(nom::Err::Incomplete(nom::Needed::new(4)))
+        );
+
+        assert_eq!(
+            parse_start(b"nuell"),
+            Err(nom::Err::Error((
+                "nuell".as_bytes(),
+                nom::error::ErrorKind::TakeWhile1
+            )))
+        );
+
+        assert_eq!(
+            parse_start(b"fals"),
+            Err(nom::Err::Incomplete(nom::Needed::new(5)))
+        );
+
+        assert_eq!(
+            parse_start(b"flase"),
+            Err(nom::Err::Error((
+                "flase".as_bytes(),
+                nom::error::ErrorKind::TakeWhile1
+            )))
+        );
+
+        assert_eq!(
+            parse_start(b"9.444555"),
+            Err(nom::Err::Incomplete(nom::Needed::new(1)))
+        );
     }
 }
