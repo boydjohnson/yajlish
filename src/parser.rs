@@ -19,7 +19,7 @@
 
 use crate::{
     common::{Enclosing, ParserStatus},
-    lexer::{parse, JsonPrimitive},
+    lexer::{parse_start, JsonPrimitive},
     Context, Handler, Status,
 };
 use std::io::BufRead;
@@ -56,27 +56,29 @@ impl<'a, H: Handler> Parser<'a, H> {
             ParserStatus::ParseComplete | ParserStatus::LexicalError => false,
             _ => true,
         } {
-            let buffer = match read.fill_buf() {
-                Ok(buffer) => buffer,
-                Err(err) => return Err(ParseError::ReadError(err.to_string())),
-            };
+            if self.buffer[self.buffer_offset..].len() <= 100_000 {
+                let buffer = read.fill_buf()?;
 
-            let buffer_length = buffer.len();
+                let buffer_length = buffer.len();
 
-            self.buffer.extend_from_slice(buffer);
+                self.buffer.extend_from_slice(buffer);
 
-            read.consume(buffer_length);
+                read.consume(buffer_length);
 
-            if buffer_length == 0
-                && (self.buffer.is_empty() || self.buffer_offset >= self.buffer.len())
-            {
-                context.update_status(ParserStatus::ParseComplete);
-                return Ok(());
+                if buffer_length == 0
+                    && (self.buffer.is_empty() || self.buffer_offset >= self.buffer.len())
+                {
+                    context.update_status(ParserStatus::ParseComplete);
+                    return Ok(());
+                }
             }
 
             let buffer_length = self.buffer[self.buffer_offset..].len();
 
-            let (status, consume_length) = match parse(&self.buffer[self.buffer_offset..]) {
+            let (status, consume_length) = match parse_knowledgeable(
+                &context,
+                &self.buffer[self.buffer_offset..],
+            ) {
                 Ok((rest, JsonPrimitive::WS)) => (None, Some(buffer_length - rest.len())),
                 Ok((rest, JsonPrimitive::RightBracket)) => {
                     let status = self.handler.handle_end_array(context);
@@ -204,14 +206,15 @@ impl<'a, H: Handler> Parser<'a, H> {
 
                     (None, Some(buffer_length - rest.len()))
                 }
-                Err(_) => (None, None),
+                Err(ParseKnowError::Incomplete) => (None, None),
+                Err(ParseKnowError::Error(msg)) => return Err(ParseError::MalformedJson(msg)),
             };
 
             if let Some(consume_length) = consume_length {
                 self.buffer_offset += consume_length;
             }
 
-            if self.buffer_offset > 1_000_000_000 {
+            if self.buffer_offset > 1_000_000 {
                 self.buffer.drain(0..self.buffer_offset);
                 self.buffer_offset = 0;
             }
@@ -305,6 +308,12 @@ impl std::fmt::Debug for ParseError {
     }
 }
 
+impl From<std::io::Error> for ParseError {
+    fn from(other: std::io::Error) -> Self {
+        ParseError::ReadError(other.to_string())
+    }
+}
+
 fn update_context_status_value(context: &mut Context) {
     if context.parser_status() == ParserStatus::ArrayNeedVal
         || context.parser_status() == ParserStatus::ArrayStart
@@ -316,5 +325,46 @@ fn update_context_status_value(context: &mut Context) {
         context.update_status(ParserStatus::GotValue);
     } else {
         context.update_status(ParserStatus::LexicalError);
+    }
+}
+
+/// When Parsing there are sometimes
+/// errors of incomplete data, or true
+/// errors that are unrecoverable.
+enum ParseKnowError {
+    Error(String),
+    Incomplete,
+}
+
+fn parse_start_knowledgeable<'a>(
+    ctx: &Context,
+    data: &'a [u8],
+) -> Result<(&'a [u8], JsonPrimitive), ParseKnowError> {
+    match parse_start(data) {
+        Err(nom::Err::Incomplete(_)) => Err(ParseKnowError::Incomplete),
+        Err(nom::Err::Error((rest, _))) => Err(ParseKnowError::Error(format!(
+            "Error parsing: {:?}: open braces: {}, open brackets: {}",
+            &rest[..(20.min(rest.len() - 1))],
+            ctx.num_open_braces(),
+            ctx.num_open_brackets()
+        ))),
+        Ok((rest, primitive)) => Ok((rest, primitive)),
+        Err(nom::Err::Failure((rest, _))) => Err(ParseKnowError::Error(format!(
+            "Error parsing: {:?}: open braces: {}, open brackets: {}",
+            &rest[..(20.min(rest.len() - 1))],
+            ctx.num_open_braces(),
+            ctx.num_open_brackets()
+        ))),
+    }
+}
+
+fn parse_knowledgeable<'a>(
+    ctx: &Context,
+    data: &'a [u8],
+) -> Result<(&'a [u8], JsonPrimitive), ParseKnowError> {
+    match ctx.parser_status() {
+        ParserStatus::Start => parse_start_knowledgeable(ctx, data),
+        ParserStatus::MapNeedKey => parse_start_knowledgeable(ctx, data),
+        _ => parse_start_knowledgeable(ctx, data),
     }
 }
