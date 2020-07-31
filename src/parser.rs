@@ -75,7 +75,7 @@ impl<'a, H: Handler> Parser<'a, H> {
 
             let buffer_length = self.buffer[self.buffer_offset..].len();
 
-            let (status, consume_length) = match parse_knowledgeable(
+            let (status, consume_length) = match parse_start_knowledgeable(
                 &context,
                 &self.buffer[self.buffer_offset..],
             ) {
@@ -294,10 +294,10 @@ impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ParseError::Utf8Error(ref msg) => {
-                writeln!(f, "Error converting bytes to UTF-8 encoded string: {}", msg)
+                write!(f, "Error converting bytes to UTF-8 encoded string: {}", msg)
             }
-            ParseError::MalformedJson(ref msg) => writeln!(f, "Error: Malformed Json: {}", msg),
-            ParseError::ReadError(ref msg) => writeln!(f, "Error: Read Error: {}", msg),
+            ParseError::MalformedJson(ref msg) => write!(f, "Error: Malformed Json: {}", msg),
+            ParseError::ReadError(ref msg) => write!(f, "Error: Read Error: {}", msg),
         }
     }
 }
@@ -342,29 +342,14 @@ fn parse_start_knowledgeable<'a>(
 ) -> Result<(&'a [u8], JsonPrimitive), ParseKnowError> {
     match parse_start(data) {
         Err(nom::Err::Incomplete(_)) => Err(ParseKnowError::Incomplete),
-        Err(nom::Err::Error((rest, _))) => Err(ParseKnowError::Error(format!(
-            "Error parsing: {:?}: open braces: {}, open brackets: {}",
-            &rest[..(20.min(rest.len() - 1))],
-            ctx.num_open_braces(),
-            ctx.num_open_brackets()
-        ))),
+        Err(nom::Err::Error((rest, _))) | Err(nom::Err::Failure((rest, _))) => {
+            Err(ParseKnowError::Error(format!(
+                "Error parsing: {:?}: open braces: {}, open brackets: {}",
+                &rest[..(20.min(rest.len() - 1))],
+                ctx.num_open_braces(),
+                ctx.num_open_brackets()
+            )))
+        }
         Ok((rest, primitive)) => Ok((rest, primitive)),
-        Err(nom::Err::Failure((rest, _))) => Err(ParseKnowError::Error(format!(
-            "Error parsing: {:?}: open braces: {}, open brackets: {}",
-            &rest[..(20.min(rest.len() - 1))],
-            ctx.num_open_braces(),
-            ctx.num_open_brackets()
-        ))),
-    }
-}
-
-fn parse_knowledgeable<'a>(
-    ctx: &Context,
-    data: &'a [u8],
-) -> Result<(&'a [u8], JsonPrimitive), ParseKnowError> {
-    match ctx.parser_status() {
-        ParserStatus::Start => parse_start_knowledgeable(ctx, data),
-        ParserStatus::MapNeedKey => parse_start_knowledgeable(ctx, data),
-        _ => parse_start_knowledgeable(ctx, data),
     }
 }
