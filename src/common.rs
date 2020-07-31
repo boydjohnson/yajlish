@@ -79,17 +79,20 @@ impl Default for Context {
 impl Context {
     /// The number of left brackets ([) encountered without
     /// corresponding right brackets, at this point in the parse.
+    #[must_use]
     pub fn num_open_brackets(&self) -> usize {
         self.num_open_brackets
     }
 
     /// The number of left braces ({) encountered without
     /// corresponding right braces, at this point in the parse.
+    #[must_use]
     pub fn num_open_braces(&self) -> usize {
         self.num_open_braces
     }
 
     /// The `ParserStatus`.
+    #[must_use]
     pub fn parser_status(&self) -> ParserStatus {
         self.status
     }
@@ -105,6 +108,7 @@ impl Context {
     }
 
     /// Read the last Enclosing.
+    #[must_use]
     pub fn last_enclosing(&self) -> Option<Enclosing> {
         self.stack.back().copied()
     }
