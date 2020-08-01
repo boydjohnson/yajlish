@@ -343,12 +343,20 @@ fn parse_start_knowledgeable<'a>(
     match parse_start(data) {
         Err(nom::Err::Incomplete(_)) => Err(ParseKnowError::Incomplete),
         Err(nom::Err::Error((rest, _))) | Err(nom::Err::Failure((rest, _))) => {
-            Err(ParseKnowError::Error(format!(
-                "Error parsing: {:?}: open braces: {}, open brackets: {}",
-                &rest[..(20.min(rest.len() - 1))],
-                ctx.num_open_braces(),
-                ctx.num_open_brackets()
-            )))
+            match std::str::from_utf8(&rest[..(20.min(rest.len() - 1))]) {
+                Ok(rest) => Err(ParseKnowError::Error(format!(
+                    "Error parsing: {}: open braces: {}, open brackets: {}",
+                    rest,
+                    ctx.num_open_braces(),
+                    ctx.num_open_brackets()
+                ))),
+                Err(_) => Err(ParseKnowError::Error(format!(
+                    "Error parsing: {:?}: open braces: {}, open brackets: {}",
+                    &rest[..(20.min(rest.len() - 1))],
+                    ctx.num_open_braces(),
+                    ctx.num_open_brackets()
+                ))),
+            }
         }
         Ok((rest, primitive)) => Ok((rest, primitive)),
     }
