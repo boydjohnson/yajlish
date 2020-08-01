@@ -13,7 +13,7 @@ proptest! {
         let mut parser = Parser::new(&mut mock_handler);
 
         let json_string = serde_json::to_string(&json).unwrap();
-
+        println!("{}", json_string);
         let mut buf = json_string.as_bytes();
 
         assert_eq!(parser.parse(&mut buf), Ok(()));
@@ -39,7 +39,8 @@ pub fn arb_json() -> impl Strategy<Value = Json> {
         Just(Json::Null),
         any::<bool>().prop_map(Json::Bool),
         any::<f64>().prop_map(Json::Number),
-        r#"[^"\\]*"#.prop_map(Json::String),
+        r#"(\x5C[\x2F\x08\x0C\x0A\x0D\x09\x22\x5C]|[^\x22\x5C]|[\u{0000}-\u{FFFF}])*"#
+            .prop_map(Json::String),
     ];
     leaf.prop_recursive(
         8,   // 8 levels deep
@@ -49,7 +50,12 @@ pub fn arb_json() -> impl Strategy<Value = Json> {
             prop_oneof![
                 // Take the inner strategy and make the two recursive cases.
                 prop::collection::vec(inner.clone(), 0..10).prop_map(Json::Array),
-                prop::collection::hash_map(r#"[^"\\]*"#, inner, 0..10).prop_map(Json::Map),
+                prop::collection::hash_map(
+                    r#"(\x5C[\x2F\x08\x0C\x0A\x0D\x09\x22\x5C]|[^\x22\x5C]|[\u{0000}-\u{FFFF}])*"#,
+                    inner,
+                    0..10
+                )
+                .prop_map(Json::Map),
             ]
         },
     )

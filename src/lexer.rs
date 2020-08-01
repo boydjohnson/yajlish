@@ -15,18 +15,26 @@
 * ------------------------------------------------------------------------------
 */
 
+use lazy_static::lazy_static;
 use nom::{
     alt,
     bytes::{
         complete,
-        streaming::{tag, take_while, take_while1},
+        streaming::{escaped, tag, take_while1},
     },
     character::is_digit,
-    combinator::{map, map_res, opt},
+    combinator::{complete, map, map_res, opt},
     named,
     number::complete::double,
+    regex::bytes::Regex,
+    regexp::bytes::re_find,
+    sequence::{preceded, terminated},
     tag, IResult,
 };
+
+lazy_static! {
+    static ref RE: Regex = Regex::new("^[\u{0000}-\u{FFFF}]").unwrap();
+}
 
 /// Primitive tokens in json.
 #[derive(Debug, PartialEq)]
@@ -266,25 +274,49 @@ fn parse_string_raw(data: &[u8]) -> Result<String, std::str::Utf8Error> {
         .map(std::borrow::ToOwned::to_owned)
 }
 
+fn parse_str<'a>(i: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+    escaped(
+        take_while1(|c| !(c == b'\\' || c == b'"')),
+        '\\',
+        json_valid_control,
+    )(i)
+}
+
+named!(
+    escaped_control,
+    alt!(
+        tag!("\x0C")
+            | tag!("\x2F")
+            | tag!("\x08")
+            | tag!("\r")
+            | tag!("\n")
+            | tag!("\t")
+            | tag!("\"")
+            | tag!("\\")
+    )
+);
+
+fn control(data: &[u8]) -> IResult<&[u8], &[u8]> {
+    complete(escaped_control)(data)
+}
+
+fn unicode(data: &[u8]) -> IResult<&[u8], &[u8]> {
+    complete(re_find(RE.clone()))(data)
+}
+
+named!(json_valid_control, alt!(control | unicode));
+
 fn parse_string(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
-    let q = parse_quotation(data)?;
-    let v = map(
-        map_res(take_while(|d| char::from(d) != '"'), parse_string_raw),
+    map(
+        map_res(
+            terminated(
+                preceded(parse_quotation, complete(parse_str)),
+                parse_quotation,
+            ),
+            parse_string_raw,
+        ),
         JsonPrimitive::JSONString,
-    )(q.0)
-    .map_err(|e| {
-        if let nom::Err::Error((_, ek)) = e {
-            return nom::Err::Error((data, ek));
-        }
-        e
-    })?;
-    let last = tag("\"")(v.0).map_err(|e| {
-        if let nom::Err::Error((_, ek)) = e {
-            return nom::Err::Error((data, ek));
-        }
-        e
-    })?;
-    Ok((last.0, v.1))
+    )(data)
 }
 
 #[cfg(test)]
@@ -345,7 +377,7 @@ mod tests {
     #[test]
     fn test_parse_string() {
         assert_eq!(
-            parse_string(b"\"foo\": \"bar\""),
+            parse_string("\"foo\": \"bar\"".as_bytes()),
             Ok((
                 ": \"bar\"".as_bytes(),
                 JsonPrimitive::JSONString("foo".to_owned())
@@ -358,18 +390,46 @@ mod tests {
                 JsonPrimitive::JSONString("diggity❤❤❤❤❤❤❤❤❤❤".to_owned())
             ))
         );
-
         assert_eq!(
-            parse_string(b"\"\""),
-            Ok(("".as_bytes(), JsonPrimitive::JSONString("".to_owned())))
+            parse_string(b"\"\": "),
+            Ok((": ".as_bytes(), JsonPrimitive::JSONString("".to_owned())))
         );
-
         assert_eq!(
             parse_string(b"\"\": null, \"\": false"),
             Ok((
                 ": null, \"\": false".as_bytes(),
                 JsonPrimitive::JSONString("".to_owned())
             ))
+        );
+
+        assert_eq!(
+            parse_string("\"\\\u{0000}\"".as_bytes()),
+            Ok((
+                "".as_bytes(),
+                JsonPrimitive::JSONString("\\\u{0000}".to_owned())
+            ))
+        );
+        assert_eq!(
+            control("\x5C\"".as_bytes()),
+            Ok(("\"".as_bytes(), "\x5C".as_bytes()))
+        );
+
+        assert_eq!(
+            parse_string("\"\x5C\"".as_bytes()),
+            Err(nom::Err::Error((
+                "\x5C\"".as_bytes(),
+                nom::error::ErrorKind::Complete
+            )))
+        );
+
+        assert_eq!(
+            parse_string("\"\\\\\"".as_bytes()),
+            Ok(("".as_bytes(), JsonPrimitive::JSONString("\\\\".to_owned())))
+        );
+
+        assert_eq!(
+            parse_string(b"\"\""),
+            Ok(("".as_bytes(), JsonPrimitive::JSONString("".to_owned())))
         );
     }
 
@@ -498,6 +558,11 @@ mod tests {
         assert_eq!(
             parse_start(b"9.444555"),
             Err(nom::Err::Incomplete(nom::Needed::new(1)))
+        );
+
+        assert_eq!(
+            parse_start("\"\": ".as_bytes()),
+            Ok((": ".as_bytes(), JsonPrimitive::JSONString("".to_owned())))
         );
     }
 }
