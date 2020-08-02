@@ -4,34 +4,31 @@ use common::assert_output_equals;
 
 #[test]
 fn test_bool() {
-    assert_output_equals("true".as_bytes(), "bool: true\n".as_bytes());
+    assert_output_equals(b"true", b"bool: true\n");
 }
 
 #[test]
 fn test_empty_map() {
-    assert_output_equals("{ }".as_bytes(), "map open '{'\nmap close '}'\n".as_bytes());
+    assert_output_equals(b"{ }", b"map open '{'\nmap close '}'\n");
 }
 
 #[test]
 fn test_simple_map() {
     assert_output_equals(
-        "{ \"foo\": 27 }".as_bytes(),
+        b"{ \"foo\": 27 }",
         "map open '{'\nkey: foo\ninteger: 27\nmap close '}'\n".as_bytes(),
     );
 }
 
 #[test]
 fn test_empty_array() {
-    assert_output_equals(
-        "[ ]".as_bytes(),
-        "array open '['\narray close ']'\n".as_bytes(),
-    );
+    assert_output_equals(b"[ ]", b"array open '['\narray close ']'\n");
 }
 
 #[test]
 fn test_simple_array() {
     assert_output_equals(
-        "[1, \"foo\", 7.5]".as_bytes(),
+        b"[1, \"foo\", 7.5]",
         "array open '['\ninteger: 1\nstring: 'foo'\ndouble: 7.5\narray close ']'\n".as_bytes(),
     );
 }
@@ -49,13 +46,13 @@ fn test_complex_array() {
 
 #[test]
 fn test_bool_with_newline() {
-    assert_output_equals("true\n ".as_bytes(), "bool: true\n".as_bytes());
+    assert_output_equals(b"true\n ", b"bool: true\n");
 }
 
 #[test]
 fn test_array_with_string() {
     assert_output_equals(
-        "[\"foo\"]".as_bytes(),
+        b"[\"foo\"]",
         "array open '['\nstring: 'foo'\narray close ']'\n".as_bytes(),
     );
 }

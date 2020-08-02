@@ -52,10 +52,10 @@ impl<'a, H: Handler> Parser<'a, H> {
     pub fn parse<B: BufRead>(&mut self, read: &mut B) -> Result<(), ParseError> {
         let context = &mut self.context;
 
-        while match context.parser_status() {
-            ParserStatus::ParseComplete | ParserStatus::LexicalError => false,
-            _ => true,
-        } {
+        while !matches!(
+            context.parser_status(),
+            ParserStatus::ParseComplete | ParserStatus::LexicalError
+        ) {
             if self.buffer[self.buffer_offset..].len() <= 100_000 {
                 let buffer = read.fill_buf()?;
 

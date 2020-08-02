@@ -15,6 +15,8 @@
 * ------------------------------------------------------------------------------
 */
 
+#![allow(clippy::invalid_regex)]
+
 use lazy_static::lazy_static;
 use nom::{
     alt,
