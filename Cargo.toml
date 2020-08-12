@@ -2,6 +2,12 @@
 name = "yajlish"
 version = "0.1.0"
 authors = ["Boyd Johnson <johnson.boyd@gmail.com>"]
+license-file = "LICENSE-2.0.txt"
+description = "An event-based json parser with json-ndjson parser"
+repository = "https://github.com/boydjohnson/yajlish"
+readme = "README.md"
+keywords = ["json", "parser", "event-based"]
+categories = ["parsing"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
