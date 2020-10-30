@@ -15,7 +15,7 @@ all-features = true
 
 [dependencies]
 lazy_static = "^1.0"
-nom = { version = "6.0.0-alpha1", features = ["regexp"] }
+nom = { version = "=6.0.0-alpha1", features = ["regexp"] }
 
 [dev-dependencies]
 pretty_assertions = "^0.6"
