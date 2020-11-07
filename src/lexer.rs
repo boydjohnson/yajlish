@@ -271,8 +271,19 @@ fn parse_integer(data: &[u8]) -> IResult<&[u8], JsonPrimitive> {
 }
 
 fn parse_string_raw(data: &[u8]) -> Result<String, std::str::Utf8Error> {
+    let mut ch = Some('\"');
+
+    let c = |s| {
+        if let Some(val) = ch {
+            ch = None;
+            s == val
+        } else {
+            false
+        }
+    };
+
     std::str::from_utf8(data)
-        .map(|s| s.trim_matches('\"'))
+        .map(|s| s.trim_matches(c))
         .map(std::borrow::ToOwned::to_owned)
 }
 
