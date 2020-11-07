@@ -38,6 +38,15 @@ impl WritingCtx {
         }
     }
 
+    fn first_context() -> Self {
+        WritingCtx {
+            num_open_braces: 0,
+            num_open_brackets: 1,
+            inside_array: false,
+            first: true,
+        }
+    }
+
     fn is_at_correct_location(&self, ctx: &Context) -> bool {
         ctx.num_open_brackets() == self.num_open_brackets
             && ctx.num_open_braces() == self.num_open_braces
@@ -143,7 +152,7 @@ where
 {
     /// Constructor.
     pub fn new(out: OUT, selectors: Vec<Selector>) -> Self {
-        let is_locations = (0..selectors.len())
+        let is_locations: Vec<Box<dyn IsLocation + Send + Sync>> = (0..selectors.len())
             .fold(
                 vec![],
                 |mut sel: Vec<Box<dyn IsLocation + Send + Sync + 'static>>, i| match selectors[i] {
@@ -173,14 +182,19 @@ where
             .rev()
             .collect();
 
-        NdJsonHandler {
-            out,
-
-            context: NdjsonContext::Selecting(Select {
+        let context = if is_locations.is_empty() {
+            NdjsonContext::Writing(WritingCtx::first_context())
+        } else {
+            NdjsonContext::Selecting(Select {
                 stack: is_locations,
                 selectors: selectors.into_iter().rev().collect(),
                 i: 0,
-            }),
+            })
+        };
+
+        NdJsonHandler {
+            out,
+            context: context,
         }
     }
 
@@ -405,6 +419,24 @@ mod tests {
         parser.parse::<BufReader<&[u8]>>(&mut input).unwrap();
 
         assert_eq!(out, output);
+    }
+
+    #[test]
+    fn test_array_inside_of_array() {
+        assert_ndjson(
+            "[{ \"foo\": [1,2,3] },{ \"foo\": [5,4,5] }]".as_bytes(),
+            vec![],
+            "{ \"foo\": [1,2,3] }\n{ \"foo\": [5,4,5] }\n".as_bytes(),
+        );
+    }
+
+    #[test]
+    fn test_array_of_data() {
+        assert_ndjson(
+            "[{ \"foo\": true },{ \"foo\": false }]".as_bytes(),
+            vec![],
+            "{ \"foo\": true }\n{ \"foo\": false }\n".as_bytes(),
+        );
     }
 
     #[test]
