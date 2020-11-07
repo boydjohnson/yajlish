@@ -18,3 +18,8 @@ fn test_nested_maps() {
 fn test_nested_arrays() {
     test_fixture(PATH, "nested_arrays.json");
 }
+
+#[test]
+fn test_quote_at_end() {
+    test_fixture(PATH, "quote_at_end_of_value.json");
+}
