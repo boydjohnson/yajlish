@@ -392,7 +392,7 @@ impl<OUT: Write> Handler for NdJsonHandler<OUT> {
 }
 
 /// Refers to either a key or an index in an array.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Hash, PartialOrd, Ord, Eq)]
 pub enum Selector {
     /// A key in a JSON object.
     Identifier(String),
