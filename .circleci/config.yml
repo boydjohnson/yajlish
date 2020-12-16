@@ -1,0 +1,32 @@
+version: 2
+jobs:
+    build:
+        docker:
+            - image: rustlang/rust:nightly
+        environment:
+            RUSTFLAGS: '-D warnings'
+        steps:
+            - checkout
+            - run:
+                name: Build
+                command: |
+                    rustc --version --verbose
+                    cargo --version --verbose
+                    cargo build --all-features
+            - run:
+                name: Test
+                command: |
+                    cargo test --all-features
+            - run:
+                name: Check Format 
+                command: |
+                    cargo fmt -- --check
+            - run:
+                name: Clippy
+                command: |
+                    cargo clippy --all-features
+workflows:
+    version: 2
+    pr-branch-ci:
+        jobs:
+            - build
