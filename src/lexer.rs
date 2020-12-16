@@ -287,7 +287,7 @@ fn parse_string_raw(data: &[u8]) -> Result<String, std::str::Utf8Error> {
         .map(std::borrow::ToOwned::to_owned)
 }
 
-fn parse_str<'a>(i: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+fn parse_str(i: &[u8]) -> IResult<&[u8], &[u8]> {
     escaped(
         take_while1(|c| !(c == b'\\' || c == b'"')),
         '\\',

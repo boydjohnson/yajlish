@@ -192,10 +192,7 @@ where
             })
         };
 
-        NdJsonHandler {
-            out,
-            context: context,
-        }
+        NdJsonHandler { out, context }
     }
 
     fn increment_selectors(&mut self, ctx: &Context) {
