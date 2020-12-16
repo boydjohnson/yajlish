@@ -1,0 +1,17 @@
+version: 2
+jobs:
+    build:
+        docker:
+            - image: rustlang/rust:nightly
+        steps:
+            - checkout
+            - run: cargo build --all-features
+            - run: cargo test --all-features
+            - run: cargo fmt -- --check
+            - run: cargo clean
+            - run: cargo clippy --all-features
+workflows:
+    version: 2
+    pr-branch-ci:
+        jobs:
+            - build
