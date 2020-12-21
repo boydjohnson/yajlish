@@ -28,9 +28,6 @@ use std::io::BufRead;
 pub struct Parser<'a, H> {
     handler: &'a mut H,
     context: Context,
-
-    buffer: Vec<u8>,
-    buffer_offset: usize,
 }
 
 impl<'a, H: Handler> Parser<'a, H> {
@@ -39,8 +36,6 @@ impl<'a, H: Handler> Parser<'a, H> {
         Parser {
             handler,
             context: Context::default(),
-            buffer: vec![],
-            buffer_offset: 0,
         }
     }
 
@@ -56,29 +51,16 @@ impl<'a, H: Handler> Parser<'a, H> {
             context.parser_status(),
             ParserStatus::ParseComplete | ParserStatus::LexicalError
         ) {
-            if self.buffer[self.buffer_offset..].len() <= 100_000 {
-                let buffer = read.fill_buf()?;
+            let buffer = read.fill_buf()?;
 
-                let buffer_length = buffer.len();
+            let buffer_length = buffer.len();
 
-                self.buffer.extend_from_slice(buffer);
-
-                read.consume(buffer_length);
-
-                if buffer_length == 0
-                    && (self.buffer.is_empty() || self.buffer_offset >= self.buffer.len())
-                {
-                    context.update_status(ParserStatus::ParseComplete);
-                    return Ok(());
-                }
+            if buffer_length == 0 {
+                context.update_status(ParserStatus::ParseComplete);
+                return Ok(());
             }
 
-            let buffer_length = self.buffer[self.buffer_offset..].len();
-
-            let (status, consume_length) = match parse_start_knowledgeable(
-                &context,
-                &self.buffer[self.buffer_offset..],
-            ) {
+            let (status, consume_length) = match parse_start_knowledgeable(&context, buffer) {
                 Ok((rest, JsonPrimitive::WS)) => (None, Some(buffer_length - rest.len())),
                 Ok((rest, JsonPrimitive::RightBracket)) => {
                     let status = self.handler.handle_end_array(context);
@@ -211,12 +193,7 @@ impl<'a, H: Handler> Parser<'a, H> {
             };
 
             if let Some(consume_length) = consume_length {
-                self.buffer_offset += consume_length;
-            }
-
-            if self.buffer_offset > 1_000_000 {
-                self.buffer.drain(0..self.buffer_offset);
-                self.buffer_offset = 0;
+                read.consume(consume_length);
             }
 
             if status == Some(Status::Abort) {
