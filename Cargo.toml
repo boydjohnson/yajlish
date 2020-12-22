@@ -1,6 +1,6 @@
 [package]
 name = "yajlish"
-version = "0.1.5"
+version = "0.2.0"
 authors = ["Boyd Johnson <johnson.boyd@gmail.com>"]
 license = "Apache-2.0"
 description = "An event-based json parser with json-ndjson parser"
