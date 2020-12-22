@@ -73,12 +73,9 @@
 //! ```
 
 mod common;
-mod lexer;
 #[cfg(feature = "ndjson")]
 pub mod ndjson_handler;
 mod parser;
-#[cfg(test)]
-mod test_prop_test;
 
 pub use common::{Context, Handler, Status};
 pub use parser::Parser;
