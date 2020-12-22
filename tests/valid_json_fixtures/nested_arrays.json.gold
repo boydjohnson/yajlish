@@ -3,7 +3,7 @@ array open '['
 array open '['
 array close ']'
 map open '{'
-key: foo
+key: "foo"
 array open '['
 array open '['
 bool: true
@@ -12,13 +12,13 @@ array close ']'
 bool: false
 null
 array close ']'
-key: data
+key: "data"
 integer: 105
 map close '}'
 array close ']'
 array open '['
 map open '{'
-key: data
+key: "data"
 array open '['
 array open '['
 array open '['

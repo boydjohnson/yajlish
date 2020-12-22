@@ -228,7 +228,7 @@ where
                         self.out.write_all(b"\n").expect("Unable to write");
                     }
                 }
-                write!(self.out, "\"{}\": ", val).expect("Unable to write to stdout")
+                write!(self.out, "{}: ", val).expect("Unable to write to stdout")
             }
         }
     }
@@ -359,7 +359,7 @@ impl<OUT: Write> Handler for NdJsonHandler<OUT> {
     }
 
     fn handle_string(&mut self, ctx: &Context, val: &str) -> Status {
-        self.handle_value(ctx, &format!("\"{}\"", val))
+        self.handle_value(ctx, val)
     }
 
     fn handle_start_map(&mut self, ctx: &Context) -> Status {
@@ -440,7 +440,7 @@ mod tests {
     fn test_spurious_key_before_correct_key() {
         assert_ndjson(
             "{ \"foo\": [1,2,3], \"bar\": { \"data\": 10}, \"data\": [10.4,4.4, 5.42] }".as_bytes(),
-            vec![Selector::Identifier("data".to_string())],
+            vec![Selector::Identifier("\"data\"".to_string())],
             "10.4\n4.4\n5.42\n".as_bytes(),
         );
     }
@@ -451,10 +451,10 @@ mod tests {
             "{ \"foo\": [{ \"bar\": { \"baz\": [null, true, false], \"data\": [6, 6.5, null]}}]}"
                 .as_bytes(),
             vec![
-                Selector::Identifier("foo".to_owned()),
+                Selector::Identifier("\"foo\"".to_owned()),
                 Selector::Index(0),
-                Selector::Identifier("bar".to_owned()),
-                Selector::Identifier("data".to_owned()),
+                Selector::Identifier("\"bar\"".to_owned()),
+                Selector::Identifier("\"data\"".to_owned()),
             ],
             "6\n6.5\nnull\n".as_bytes(),
         );
@@ -464,7 +464,10 @@ mod tests {
     fn test_selector_index() {
         assert_ndjson(
             "{ \"foo\": [[1,2,3], [8.68,null,2.667]]}".as_bytes(),
-            vec![Selector::Identifier("foo".to_owned()), Selector::Index(1)],
+            vec![
+                Selector::Identifier("\"foo\"".to_owned()),
+                Selector::Index(1),
+            ],
             "8.68\nnull\n2.667\n".as_bytes(),
         );
     }
@@ -473,7 +476,7 @@ mod tests {
     fn test_objects_in_array() {
         assert_ndjson(
             "{ \"foo\": [{ \"bar\": 10}, {\"bar\": 11 }]}".as_bytes(),
-            vec![Selector::Identifier("foo".to_owned())],
+            vec![Selector::Identifier("\"foo\"".to_owned())],
             "{ \"bar\": 10 }\n{ \"bar\": 11 }\n".as_bytes(),
         )
     }
@@ -482,7 +485,7 @@ mod tests {
     fn test_basic_success() {
         assert_ndjson(
             "{ \"foo\": [1, 2, 3] }".as_bytes(),
-            vec![Selector::Identifier("foo".to_owned())],
+            vec![Selector::Identifier("\"foo\"".to_owned())],
             "1\n2\n3\n".as_bytes(),
         );
     }
@@ -491,7 +494,7 @@ mod tests {
     fn test_array_values_of_objects() {
         assert_ndjson(
             "{ \"foo\": [{ \"bar\": [false, null, 10.5, 50]}, { \"bar\": [true,\n 10.4578, null, 60] }]}".as_bytes(),
-            vec![Selector::Identifier("foo".to_owned())],
+            vec![Selector::Identifier("\"foo\"".to_owned())],
             "{ \"bar\": [false,null,10.5,50] }\n{ \"bar\": [true,10.4578,null,60] }\n".as_bytes()
         );
     }
@@ -500,7 +503,7 @@ mod tests {
     fn test_double_index_selector() {
         assert_ndjson(
             "{ \"foo\": [[null,\"foo\",\"bar\"], [{ \"bar\": { \"bar\": [{ \"data\": [1,false,null,5.6]}]}}] }".as_bytes(),
-            vec![Selector::Identifier("foo".to_owned()), Selector::Index(1), Selector::Identifier("bar".to_owned()), Selector::Identifier("bar".to_owned()), Selector::Index(0), Selector::Identifier("data".to_owned())],
+            vec![Selector::Identifier("\"foo\"".to_owned()), Selector::Index(1), Selector::Identifier("\"bar\"".to_owned()), Selector::Identifier("\"bar\"".to_owned()), Selector::Index(0), Selector::Identifier("\"data\"".to_owned())],
             "1\nfalse\nnull\n5.6\n".as_bytes()
         );
     }
@@ -511,10 +514,10 @@ mod tests {
             "{ \"gauss\": [{ \"foo\": null}, [{ \"feynman\": [{ \"foo\": [1, false, \"bar\"]}]}]]}"
                 .as_bytes(),
             vec![
-                Selector::Identifier("gauss".to_owned()),
+                Selector::Identifier("\"gauss\"".to_owned()),
                 Selector::Index(1),
-                Selector::Identifier("feynman".to_owned()),
-                Selector::Identifier("foo".to_owned()),
+                Selector::Identifier("\"feynman\"".to_owned()),
+                Selector::Identifier("\"foo\"".to_owned()),
             ],
             "1\nfalse\n\"bar\"\n".as_bytes(),
         );
@@ -524,7 +527,7 @@ mod tests {
     fn test_strings_in_array_in_array() {
         assert_ndjson(
             "{ \"gauss\": [false, [\"cauchey\", \"feynman\", \"riemann\"], 1, 2, true]}".as_bytes(),
-            vec![Selector::Identifier("gauss".to_owned())],
+            vec![Selector::Identifier("\"gauss\"".to_owned())],
             "false\n[\"cauchey\",\"feynman\",\"riemann\"]\n1\n2\ntrue\n".as_bytes(),
         );
     }
