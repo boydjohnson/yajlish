@@ -6,11 +6,11 @@ integer: 3
 array close ']'
 array open '['
 bool: true
-string: 'true, null'
+string: '"true, null"'
 bool: false
 array close ']'
 map open '{'
-key: data
+key: "data"
 array open '['
 double: 9.5
 double: 0.0000000001

@@ -1,14 +1,14 @@
 map open '{'
-key: foo
+key: "foo"
 map open '{'
-key: bar
+key: "bar"
 array open '['
 map open '{'
-key: data
+key: "data"
 array open '['
 null
 bool: false
-string: 'null'
+string: '"null"'
 array close ']'
 map close '}'
 array close ']'

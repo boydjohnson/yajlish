@@ -1,4 +1,4 @@
 map open '{'
-key: foo
-string: 'begonias are \"special\"'
+key: "foo"
+string: '"begonias are \"special\""'
 map close '}'

@@ -1,14 +1,14 @@
-# Rust library for streaming, event-based JSON parsing, based loosely on [yajl](https://github.com/yajl/yajl)
+# Rust event-base JSON parsing library
+- based loosely on [yajl](https://github.com/yajl/yajl)
 
 ### Libraries you probably need instead of this library
 - [rust-json](https://crates.io/crates/json)
 - [serde_json](https://crates.io/crates/serde_json)
 
 ### Features
-- Partial conformance with test cases from yajl
 - Parse JSON without loading the whole JSON document into memory
 
-### Use
+### Usage
 
 Suppose you wanted to parse the count of all JSON object keys that are named 'foo'.
 

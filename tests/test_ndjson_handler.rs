@@ -12,7 +12,7 @@ fn test_custom_geojson() {
         PATH,
         "custom.geo.json",
         vec![yajlish::ndjson_handler::Selector::Identifier(
-            "features".to_owned(),
+            "\"features\"".to_owned(),
         )],
     );
 }
@@ -23,7 +23,7 @@ fn test_custom_json() {
         PATH,
         "prize.json",
         vec![yajlish::ndjson_handler::Selector::Identifier(
-            "prizes".to_owned(),
+            "\"prizes\"".to_owned(),
         )],
     );
 }
