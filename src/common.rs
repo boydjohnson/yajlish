@@ -38,7 +38,7 @@ pub enum Enclosing {
 /// The state that the parser is in.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ParserStatus {
-    /// Received the first token
+    /// Receiving the first token
     Start,
     /// Received the last token
     ParseComplete,
@@ -48,9 +48,9 @@ pub enum ParserStatus {
     LexicalError,
     /// Received {
     MapStart,
-    /// Received
+    /// Received Key now looking for :, (Won't see in handler)
     MapSep,
-    /// Received
+    /// Received :
     MapNeedVal,
     /// Received Map value
     MapGotVal,
@@ -60,7 +60,7 @@ pub enum ParserStatus {
     ArrayStart,
     /// Received Array value
     ArrayGotVal,
-    /// Received , in a Array
+    /// Received , in an Array
     ArrayNeedVal,
     /// Received a value that is the whole document like "true"
     GotValue,
