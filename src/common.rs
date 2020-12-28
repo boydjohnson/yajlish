@@ -29,27 +29,40 @@ pub enum Status {
 /// Brackets and Braces to keep track of.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Enclosing {
+    /// Left Brace '{'
     LeftBrace,
+    /// Left Bracket '['
     LeftBracket,
-    RightBrace,
-    RightBracket,
 }
 
 /// The state that the parser is in.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ParserStatus {
+    /// Received the first token
     Start,
+    /// Received the last token
     ParseComplete,
+    /// Error
     ParseError,
+    /// The json is malformed
     LexicalError,
+    /// Received {
     MapStart,
+    /// Received
     MapSep,
+    /// Received
     MapNeedVal,
+    /// Received Map value
     MapGotVal,
+    /// Received , in a Map
     MapNeedKey,
+    /// Received [
     ArrayStart,
+    /// Received Array value
     ArrayGotVal,
+    /// Received , in a Array
     ArrayNeedVal,
+    /// Received a value that is the whole document like "true"
     GotValue,
 }
 

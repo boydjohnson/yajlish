@@ -28,7 +28,7 @@
 //!     impl Handler for FooCountHandler {
 //!         
 //!         fn handle_map_key(&mut self, _ctx: &Context, key: &str) -> Status {
-//!             if key == "foo" {
+//!             if key == "\"foo\"" {
 //!                 self.count += 1;
 //!             }
 //!             Status::Continue
@@ -77,5 +77,5 @@ mod common;
 pub mod ndjson_handler;
 mod parser;
 
-pub use common::{Context, Handler, Status};
+pub use common::{Context, Enclosing, Handler, ParserStatus, Status};
 pub use parser::Parser;
