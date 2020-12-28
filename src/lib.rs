@@ -77,5 +77,5 @@ mod common;
 pub mod ndjson_handler;
 mod parser;
 
-pub use common::{Context, Handler, Status};
+pub use common::{Context, Enclosing, Handler, ParserStatus, Status};
 pub use parser::Parser;
