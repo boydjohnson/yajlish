@@ -1,12 +1,16 @@
-# Rust event-based JSON parsing library
+# Yajlish - Rust event-based JSON parser
+Write tools to parse json when you don't know its exact structure **and** can't load it all into memory.
+
 - based loosely on [yajl](https://github.com/yajl/yajl)
+- includes a JSON -> ndjson converter with the feature "ndjson"
+
+[![boydjohnson](https://circleci.com/gh/boydjohnson/yajlish/tree/master.svg?style=shield)](https://circleci.com/gh/boydjohnson/yajlish/tree/master)
+
+[Docs](https://docs.rs/yajlish)
 
 ### Libraries you probably need instead of this library
 - [rust-json](https://crates.io/crates/json)
 - [serde_json](https://crates.io/crates/serde_json)
-
-### Features
-- Parse JSON without loading the whole JSON document into memory
 
 ### Usage
 
