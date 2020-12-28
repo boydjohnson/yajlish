@@ -9,6 +9,7 @@ readme = "README.md"
 keywords = ["json", "parser", "event-based"]
 categories = ["parsing"]
 edition = "2018"
+documentation = "https://docs.rs/yajlish"
 
 [package.metadata.docs.rs]
 all-features = true

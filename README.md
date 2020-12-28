@@ -1,4 +1,4 @@
-# Rust event-base JSON parsing library
+# Rust event-based JSON parsing library
 - based loosely on [yajl](https://github.com/yajl/yajl)
 
 ### Libraries you probably need instead of this library
@@ -22,7 +22,7 @@ Suppose you wanted to parse the count of all JSON object keys that are named 'fo
      impl Handler for FooCountHandler {
          
          fn handle_map_key(&mut self, _ctx: &Context, key: &str) -> Status {
-             if key == "foo" {
+             if key == "\"foo\"" {
                  self.count += 1;
              }
              Status::Continue
