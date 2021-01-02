@@ -228,7 +228,7 @@ where
                         self.out.write_all(b"\n").expect("Unable to write");
                     }
                 }
-                write!(self.out, "{}: ", val).expect("Unable to write to stdout")
+                write!(self.out, "{}:", val).expect("Unable to write to stdout")
             }
         }
     }
@@ -277,14 +277,14 @@ where
                         self.out.write_all(b"\n").expect("Unable to write");
                     }
                 }
-                self.out.write_all(b"{ ").expect("Unable to write");
+                self.out.write_all(b"{").expect("Unable to write");
             }
         }
     }
 
     fn map_end(&mut self, ctx: &Context) {
         if let NdjsonContext::Writing(writing) = &self.context {
-            self.out.write_all(b" }").expect("Unable to write");
+            self.out.write_all(b"}").expect("Unable to write");
             if writing.is_at_correct_location(ctx) {
                 self.out
                     .write_all(b"\n")
@@ -423,7 +423,7 @@ mod tests {
         assert_ndjson(
             "[{ \"foo\": [1,2,3] },{ \"foo\": [5,4,5] }]".as_bytes(),
             vec![],
-            "{ \"foo\": [1,2,3] }\n{ \"foo\": [5,4,5] }\n".as_bytes(),
+            "{\"foo\":[1,2,3]}\n{\"foo\":[5,4,5]}\n".as_bytes(),
         );
     }
 
@@ -432,7 +432,7 @@ mod tests {
         assert_ndjson(
             "[{ \"foo\": true },{ \"foo\": false }]".as_bytes(),
             vec![],
-            "{ \"foo\": true }\n{ \"foo\": false }\n".as_bytes(),
+            "{\"foo\":true}\n{\"foo\":false}\n".as_bytes(),
         );
     }
 
@@ -477,7 +477,7 @@ mod tests {
         assert_ndjson(
             "{ \"foo\": [{ \"bar\": 10}, {\"bar\": 11 }]}".as_bytes(),
             vec![Selector::Identifier("\"foo\"".to_owned())],
-            "{ \"bar\": 10 }\n{ \"bar\": 11 }\n".as_bytes(),
+            "{\"bar\":10}\n{\"bar\":11}\n".as_bytes(),
         )
     }
 
@@ -495,7 +495,7 @@ mod tests {
         assert_ndjson(
             "{ \"foo\": [{ \"bar\": [false, null, 10.5, 50]}, { \"bar\": [true,\n 10.4578, null, 60] }]}".as_bytes(),
             vec![Selector::Identifier("\"foo\"".to_owned())],
-            "{ \"bar\": [false,null,10.5,50] }\n{ \"bar\": [true,10.4578,null,60] }\n".as_bytes()
+            "{\"bar\":[false,null,10.5,50]}\n{\"bar\":[true,10.4578,null,60]}\n".as_bytes()
         );
     }
 
