@@ -4,7 +4,7 @@ Write tools to parse json when you don't know its exact structure **and** can't 
 - based loosely on [yajl](https://github.com/yajl/yajl)
 - includes a JSON -> ndjson converter with the feature "ndjson"
 
-![ci](https://github.com/boydjohnson/yajlish/actions/workflows/ci.yml/badge.svg)
+![ci](https://github.com/boydjohnson/yajlish/actions/workflows/ci.yaml/badge.svg)
 
 [Docs](https://docs.rs/yajlish)
 
