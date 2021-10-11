@@ -1,6 +1,6 @@
 [package]
 name = "yajlish"
-version = "0.3.2"
+version = "0.4.0"
 authors = ["Boyd Johnson <johnson.boyd@gmail.com>"]
 license = "Apache-2.0"
 description = "An event-based json parser with json-ndjson parser"
@@ -16,11 +16,14 @@ all-features = true
 
 [dependencies]
 json-tools = "^1.1"
+lalrpop-util = { version = "0.19", optional = true }
 
 [dev-dependencies]
 pretty_assertions = "^0.6"
 
+[build-dependencies]
+lalrpop = { version = "0.19", optional = true }
 
 
 [features]
-ndjson = []
+ndjson = ["lalrpop", "lalrpop-util"]
