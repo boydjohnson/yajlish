@@ -397,9 +397,18 @@ pub enum Selector {
     Index(usize),
 }
 
+use lalrpop_util::lalrpop_mod;
+
+lalrpop_mod!(pub selector_parser);
+
+pub use self::selector_parser::SelectorParser;
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        selector_parser::{ArrayTokenParser, IdentifierTokenParser, SelectorParser},
+        *,
+    };
     use crate::Parser;
     use pretty_assertions::assert_eq;
     use std::io::BufReader;
@@ -529,6 +538,63 @@ mod tests {
             "{ \"gauss\": [false, [\"cauchey\", \"feynman\", \"riemann\"], 1, 2, true]}".as_bytes(),
             vec![Selector::Identifier("\"gauss\"".to_owned())],
             "false\n[\"cauchey\",\"feynman\",\"riemann\"]\n1\n2\ntrue\n".as_bytes(),
+        );
+    }
+
+    #[test]
+    fn test_selector_parser() {
+        assert_eq!(
+            IdentifierTokenParser::new().parse(".TOTAL_SALES"),
+            Ok(Selector::Identifier("TOTAL_SALES".into()))
+        );
+
+        assert_eq!(
+            IdentifierTokenParser::new().parse(".TOTAL_SALES"),
+            Ok(Selector::Identifier("TOTAL_SALES".into()))
+        );
+
+        assert_eq!(ArrayTokenParser::new().parse("[4]"), Ok(Selector::Index(4)));
+
+        assert_eq!(
+            ArrayTokenParser::new().parse("[45]"),
+            Ok(Selector::Index(45))
+        );
+
+        assert_eq!(SelectorParser::new().parse("d"), Ok(vec![]));
+
+        assert_eq!(
+            SelectorParser::new().parse("d[2]"),
+            Ok(vec![Selector::Index(2)])
+        );
+
+        assert_eq!(
+            SelectorParser::new().parse("d[2].manager"),
+            Ok(vec![
+                Selector::Index(2),
+                Selector::Identifier("manager".into())
+            ])
+        );
+
+        assert_eq!(
+            SelectorParser::new().parse("d.TOTAL_SALES[4].manager"),
+            Ok(vec![
+                Selector::Identifier("TOTAL_SALES".into()),
+                Selector::Index(4),
+                Selector::Identifier("manager".into())
+            ])
+        );
+
+        assert_eq!(
+            SelectorParser::new().parse("d[4].TOTAL_SALES[2555].manager[4].salary.currency"),
+            Ok(vec![
+                Selector::Index(4),
+                Selector::Identifier("TOTAL_SALES".into()),
+                Selector::Index(2555),
+                Selector::Identifier("manager".into()),
+                Selector::Index(4),
+                Selector::Identifier("salary".into()),
+                Selector::Identifier("currency".into()),
+            ])
         );
     }
 }

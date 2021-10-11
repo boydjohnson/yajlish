@@ -1,0 +1,26 @@
+use crate::ndjson_handler;
+use lalrpop_util::ParseError;
+
+grammar;
+
+pub IdentifierToken: ndjson_handler::Selector = r"\.[^\[\.]+" => ndjson_handler::Selector::Identifier(Into::into(<>.trim_start_matches('.')));
+
+pub ArrayToken: ndjson_handler::Selector = {
+    r"\[[0-9]+\]" =>? <>.trim_end_matches(']')
+        .trim_start_matches('[')
+        .parse::<usize>()
+        .map_err(|_| ParseError::User {
+        error: "Index too big",
+    }).map(ndjson_handler::Selector::Index)
+};
+
+EitherToken: ndjson_handler::Selector = {
+    <i:IdentifierToken> => i,
+    <a:ArrayToken> => a,
+}
+
+pub Selector: Vec<ndjson_handler::Selector> = {
+    "d" <r: EitherToken *> => {
+        r
+    },
+}
