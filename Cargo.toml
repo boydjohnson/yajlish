@@ -15,11 +15,13 @@ documentation = "https://docs.rs/yajlish"
 all-features = true
 
 [dependencies]
-json-tools = "^1.1"
+nom = { version = "7.1" }
 lalrpop-util = { version = "0.19", optional = true }
+json-tools = "1.1"
 
 [dev-dependencies]
 pretty_assertions = "^0.6"
+json-tools = "1.1"
 
 [build-dependencies]
 lalrpop = { version = "0.19", optional = true }
