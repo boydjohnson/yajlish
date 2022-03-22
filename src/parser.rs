@@ -19,10 +19,12 @@
 
 use crate::{
     common::{Enclosing, ParserStatus},
+    lexer::{parse, TokenType},
     Context, Handler, Status,
 };
-use json_tools::{Buffer, BufferType, Lexer, Token, TokenType};
-use std::io::BufRead;
+use std::{
+    io::{BufRead},
+};
 
 /// Main Parser struct.
 pub struct Parser<'a, H> {
@@ -47,17 +49,14 @@ impl<'a, H: Handler> Parser<'a, H> {
     pub fn parse<B: BufRead>(&mut self, read: &mut B) -> Result<(), ParseError> {
         let context = &mut self.context;
 
-        let mut lexer = Lexer::new(Wrapper(read), BufferType::Bytes(20));
+        let mut lexer = Wrapper(read);
 
         while !matches!(
             context.parser_status(),
             ParserStatus::ParseComplete | ParserStatus::LexicalError
         ) {
             let status = match lexer.next() {
-                Some(Token {
-                    kind: TokenType::BracketClose,
-                    ..
-                }) => {
+                Some(TokenType::RightBracket) => {
                     let status = self.handler.handle_end_array(context);
                     if context.last_enclosing() == Some(Enclosing::LeftBracket) {
                         context.remove_last_enclosing();
@@ -75,10 +74,7 @@ impl<'a, H: Handler> Parser<'a, H> {
                     }
                     Some(status)
                 }
-                Some(Token {
-                    kind: TokenType::CurlyClose,
-                    ..
-                }) => {
+                Some(TokenType::RightBrace) => {
                     let status = self.handler.handle_end_map(context);
 
                     if context.last_enclosing() == Some(Enclosing::LeftBrace) {
@@ -98,20 +94,14 @@ impl<'a, H: Handler> Parser<'a, H> {
 
                     Some(status)
                 }
-                Some(Token {
-                    kind: TokenType::BracketOpen,
-                    ..
-                }) => {
+                Some(TokenType::LeftBracket) => {
                     let status = self.handler.handle_start_array(context);
                     context.add_enclosing(Enclosing::LeftBracket);
                     context.inc_brackets();
                     context.update_status(ParserStatus::ArrayStart);
                     Some(status)
                 }
-                Some(Token {
-                    kind: TokenType::CurlyOpen,
-                    ..
-                }) => {
+                Some(TokenType::LeftBrace) => {
                     let status = self.handler.handle_start_map(context);
                     context.add_enclosing(Enclosing::LeftBrace);
                     context.inc_braces();
@@ -119,48 +109,33 @@ impl<'a, H: Handler> Parser<'a, H> {
 
                     Some(status)
                 }
-                Some(Token {
-                    kind: TokenType::Null,
-                    ..
-                }) => {
+                Some(TokenType::Null) => {
                     let status = self.handler.handle_null(context);
 
                     update_context_status_value(context);
 
                     Some(status)
                 }
-                Some(Token {
-                    kind: TokenType::Number,
-                    buf,
-                }) => {
-                    let status = match buf {
-                        Buffer::MultiByte(b) => match std::str::from_utf8(&b) {
-                            Ok(s) => match s.parse::<i64>() {
-                                Ok(num) => self.handler.handle_int(context, num),
-                                Err(_) => match s.parse::<f64>() {
-                                    Ok(num) => self.handler.handle_double(context, num),
-                                    Err(_) => panic!("Could not parse number as i64 or f64"),
-                                },
+                Some(TokenType::Number(b)) => {
+                    let status = match std::str::from_utf8(&b) {
+                        Ok(s) => match s.parse::<i64>() {
+                            Ok(num) => self.handler.handle_int(context, num),
+                            Err(_) => match s.parse::<f64>() {
+                                Ok(num) => self.handler.handle_double(context, num),
+                                Err(_) => panic!("Could not parse number as i64 or f64"),
                             },
-                            Err(e) => return Err(ParseError::MalformedJson(e.to_string())),
                         },
-                        Buffer::Span(_) => panic!("Unexpected Span when handling number"),
+                        Err(e) => return Err(ParseError::MalformedJson(e.to_string())),
                     };
 
                     update_context_status_value(context);
 
                     Some(status)
                 }
-                Some(Token {
-                    kind: TokenType::String,
-                    buf,
-                }) => {
-                    let string = match buf {
-                        Buffer::MultiByte(ref b) => match std::str::from_utf8(b) {
-                            Ok(s) => s,
-                            Err(e) => return Err(ParseError::MalformedJson(e.to_string())),
-                        },
-                        Buffer::Span(_) => panic!("Unexpected span in string buffer"),
+                Some(TokenType::String(b)) => {
+                    let string = match std::str::from_utf8(&b) {
+                        Ok(s) => s,
+                        Err(e) => return Err(ParseError::MalformedJson(e.to_string())),
                     };
 
                     if context.parser_status() == ParserStatus::ArrayNeedVal
@@ -188,30 +163,21 @@ impl<'a, H: Handler> Parser<'a, H> {
                         None
                     }
                 }
-                Some(Token {
-                    kind: TokenType::BooleanTrue,
-                    ..
-                }) => {
+                Some(TokenType::BoolTrue) => {
                     let status = self.handler.handle_bool(context, true);
 
                     update_context_status_value(context);
 
                     Some(status)
                 }
-                Some(Token {
-                    kind: TokenType::BooleanFalse,
-                    ..
-                }) => {
+                Some(TokenType::BoolFalse) => {
                     let status = self.handler.handle_bool(context, false);
 
                     update_context_status_value(context);
 
                     Some(status)
                 }
-                Some(Token {
-                    kind: TokenType::Comma,
-                    ..
-                }) => {
+                Some(TokenType::Comma) => {
                     if context.parser_status() == ParserStatus::MapGotVal {
                         context.update_status(ParserStatus::MapNeedKey);
                     } else if context.parser_status() == ParserStatus::ArrayGotVal {
@@ -222,21 +188,12 @@ impl<'a, H: Handler> Parser<'a, H> {
 
                     None
                 }
-                Some(Token {
-                    kind: TokenType::Colon,
-                    ..
-                }) => {
+                Some(TokenType::Colon) => {
                     if context.parser_status() == ParserStatus::MapSep {
                         context.update_status(ParserStatus::MapNeedVal);
                     }
 
                     None
-                }
-                Some(Token {
-                    kind: TokenType::Invalid,
-                    buf,
-                }) => {
-                    return Err(ParseError::MalformedJson(format!("{:?}", buf)));
                 }
                 None => {
                     self.context.update_status(ParserStatus::ParseComplete);
@@ -356,14 +313,23 @@ fn update_context_status_value(context: &mut Context) {
 struct Wrapper<'a>(&'a mut dyn BufRead);
 
 impl<'a> Iterator for Wrapper<'a> {
-    type Item = u8;
+    type Item = TokenType;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let buffer = self.0.fill_buf().ok();
-        match buffer.map(|b| b.first()).flatten().copied() {
+        match self.0.fill_buf().ok() {
             Some(b) => {
-                self.0.consume(1);
-                Some(b)
+                let len = b.len();
+
+                match parse(b) {
+                    Ok((remaining, t)) => {
+                        let len = len - remaining.len();
+
+                        self.0.consume(len);
+
+                        Some(t)
+                    }
+                    Err(_) => None,
+                }
             }
             None => None,
         }
