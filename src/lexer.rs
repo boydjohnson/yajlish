@@ -1,10 +1,13 @@
 use nom::{
     branch::alt,
     bytes::streaming::tag,
-    character::streaming::multispace0,
-    combinator::{map, recognize},
+    character::{
+        complete::hex_digit1,
+        streaming::{hex_digit0, multispace0},
+    },
+    combinator::{map, opt, recognize, verify},
     error::ErrorKind,
-    multi::many0,
+    multi::{count, many0, many1},
     sequence::delimited,
     Err, IResult, Parser,
 };
@@ -25,33 +28,32 @@ pub fn parse(s: &[u8]) -> IResult<&[u8], TokenType> {
 }
 
 fn string_inner(s: &[u8]) -> IResult<&[u8], &[u8]> {
-    recognize(
-        quotation_mark.and(
-            recognize(many0(
-                most_parsing.or(recognize(
-                    tag("\\").and(
-                        quotation_mark
-                            .or(solidus)
-                            .or(reverse_solidus)
-                            .or(backspace)
-                            .or(formfeed)
-                            .or(newline)
-                            .or(carriage_return)
-                            .or(horizontal_tab)
-                            .or(u_with_hexadecimal_digits),
-                    ),
-                )),
-            ))
-            .and(quotation_mark),
-        ),
-    )(s)
+    recognize(quotation_mark.and(most_parsing).and(quotation_mark))(s)
 }
 
 fn most_parsing(s: &[u8]) -> IResult<&[u8], &[u8]> {
+    recognize(many0(
+        _most_parsing.or(recognize(
+            tag("\\").and(
+                solidus
+                    .or(reverse_solidus)
+                    .or(quotation_mark)
+                    .or(backspace)
+                    .or(newline)
+                    .or(formfeed)
+                    .or(carriage_return)
+                    .or(horizontal_tab)
+                    .or(u_with_hexadecimal_digits),
+            ),
+        )),
+    ))(s)
+}
+
+fn _most_parsing(s: &[u8]) -> IResult<&[u8], &[u8]> {
     if !s.is_empty() {
         let (left, right) = s.split_at(1);
 
-        if !is_control_character(left[0]) {
+        if is_not_control_character(left[0]) {
             Ok((right, left))
         } else {
             Err(Err::Error(nom::error::Error::new(s, ErrorKind::Escaped)))
@@ -61,14 +63,14 @@ fn most_parsing(s: &[u8]) -> IResult<&[u8], &[u8]> {
     }
 }
 
-fn is_control_character(c: u8) -> bool {
+fn is_not_control_character(c: u8) -> bool {
     let c: char = c.into();
 
-    c.is_control() || c == '"' || c == '\\'
+    !(c.is_control() || c == '"' || c == '\\')
 }
 
 fn quotation_mark(s: &[u8]) -> IResult<&[u8], &[u8]> {
-    tag("\u{0022}")(s)
+    tag("\"")(s)
 }
 
 fn solidus(s: &[u8]) -> IResult<&[u8], &[u8]> {
@@ -100,11 +102,11 @@ fn horizontal_tab(s: &[u8]) -> IResult<&[u8], &[u8]> {
 }
 
 fn u_with_hexadecimal_digits(s: &[u8]) -> IResult<&[u8], &[u8]> {
-    tag("\\u")(s)
+    recognize(tag("u").and(verify(hex_digit0, |s: &[u8]| s.len() == 4)))(s)
 }
 
-fn ws(s: &[u8]) -> IResult<&[u8], &[u8]> {
-    multispace0(s)
+fn ws(s: &[u8]) -> IResult<&[u8], Option<&[u8]>> {
+    opt(alt((carriage_return, newline, horizontal_tab, tag(" "))))(s)
 }
 
 fn left_brace(s: &[u8]) -> IResult<&[u8], TokenType> {
@@ -124,7 +126,7 @@ fn right_bracket(s: &[u8]) -> IResult<&[u8], TokenType> {
 }
 
 fn string(s: &[u8]) -> IResult<&[u8], TokenType> {
-    delimited(ws, map(string_inner, TokenType::String), ws)(s)
+    map(string_inner, TokenType::String)(s)
 }
 
 fn comma(s: &[u8]) -> IResult<&[u8], TokenType> {
@@ -147,7 +149,7 @@ fn null(s: &[u8]) -> IResult<&[u8], TokenType> {
     delimited(ws, map(tag("null"), |_| TokenType::Null), ws)(s)
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum TokenType<'a> {
     LeftBrace,
     RightBrace,
@@ -164,14 +166,24 @@ pub enum TokenType<'a> {
 
 #[cfg(test)]
 mod tests {
-    use json_tools::{Lexer, Token};
-    use pretty_assertions::assert_eq;
+    use crate::lexer::most_parsing;
 
     use super::{string, TokenType};
+    use json_tools::{Lexer, Token};
+    use pretty_assertions::assert_eq;
+    use proptest::prelude::*;
 
     #[test]
     fn test_parse_string_success() {
-        let test_string = "\"hello\": 4";
+        let test_string = "\"\"";
+
+        test_parse_string(test_string);
+
+        let test_string = "\"a\"";
+
+        test_parse_string(test_string);
+
+        let test_string = "\"\\u0000\"";
 
         test_parse_string(test_string);
     }
@@ -182,11 +194,37 @@ mod tests {
             json_tools::BufferType::Bytes(20),
         );
 
-        let token = test_lexer.next().unwrap();
+        let token = test_lexer.next();
 
-        let (_, parsed_token) = string(test_string.as_bytes()).unwrap();
+        let parsed_token = string(test_string.as_bytes()).map(|(_, s)| s).ok();
 
-        assert_eq!(parsed_token, token);
+        if let Some(parsed_token) = parsed_token {
+            if let Some(token) = token {
+                assert_eq!(parsed_token, token);
+            }
+        } else {
+            if let Some(token) = token {
+                assert!(matches!(token.kind, json_tools::TokenType::Invalid));
+            }
+        }
+    }
+
+    #[test]
+    fn test_most_parsing() {
+        assert_eq!(
+            most_parsing("45\"".as_bytes()),
+            Ok(("\"".as_bytes(), "45".as_bytes()))
+        );
+
+        assert_eq!(
+            most_parsing("\"".as_bytes()),
+            Ok(("\"".as_bytes(), "".as_bytes()))
+        );
+
+        assert_eq!(
+            most_parsing("a\"".as_bytes()),
+            Ok(("\"".as_bytes(), "a".as_bytes()))
+        );
     }
 
     impl<'a> PartialEq<Token> for TokenType<'a> {

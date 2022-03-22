@@ -72,7 +72,7 @@
 //! ```
 
 mod common;
-mod lexer;
+pub mod lexer;
 #[cfg(feature = "ndjson")]
 pub mod ndjson_handler;
 mod parser;
