@@ -1,11 +1,8 @@
 use nom::{
     branch::alt,
     bytes::streaming::{is_a, tag},
-    character::{
-        complete::multispace0,
-        streaming::{digit0, digit1, hex_digit0},
-    },
-    combinator::{eof, map, opt, recognize, verify},
+    character::{complete::multispace0, streaming::hex_digit0},
+    combinator::{map, opt, recognize, verify},
     error::ErrorKind,
     multi::many0,
     sequence::{delimited, preceded},
@@ -14,8 +11,6 @@ use nom::{
 
 pub fn parse(s: &[u8]) -> IResult<&[u8], TokenType> {
     alt((
-        string,
-        number,
         left_brace,
         left_bracket,
         null,
@@ -25,6 +20,8 @@ pub fn parse(s: &[u8]) -> IResult<&[u8], TokenType> {
         colon,
         bool_true,
         bool_false,
+        string,
+        number,
     ))(s)
 }
 
@@ -220,11 +217,10 @@ pub enum TokenType {
 
 #[cfg(test)]
 mod tests {
-    use crate::lexer::{decimal_and_optional_exp, digit_zero_or_multiple, most_parsing, parse};
-
-    use super::{string, TokenType};
+    use super::*;
     use json_tools::{Lexer, Token};
     use pretty_assertions::assert_eq;
+    use proptest::prelude::*;
 
     #[test]
     fn test_parse_string_success() {
@@ -241,6 +237,18 @@ mod tests {
         test_parse_string(test_string);
     }
 
+    proptest! {
+
+        /// This regex was taken from stackoverflow: https://stackoverflow.com/questions/2583472/regex-to-validate-json
+        ///
+        ///
+        ///
+        #[test]
+        fn test_proptest_parse(test_string in r#"\{(\s|\n\s)*(("\w*"):(\s)*("\w*"|\d*|(\{(\s|\n\s)*(("\w*"):(\s)*("\w*(,\w+)*"|\d{1,}|\[(\s|\n\s)*(\{(\s|\n\s)*(("\w*"):(\s)*(("\w*"|\d{1,}))((,(\s|\n\s)*"\w*"):(\s)*("\w*"|\d{1,}))*(\s|\n)*\})){1}(\s|\n\s)*(,(\s|\n\s)*\{(\s|\n\s)*(("\w*"):(\s)*(("\w*"|\d{1,}))((,(\s|\n\s)*"\w*"):(\s)*("\w*"|\d{1,}))*(\s|\n)*\})?)*(\s|\n\s)*\]))((,(\s|\n\s)*"\w*"):(\s)*("\w*(,\w+)*"|\d{1,}|\[(\s|\n\s)*(\{(\s|\n\s)*(("\w*"):(\s)*(("\w*"|\d{1,}))((,(\s|\n\s)*"\w*"):(\s)*("\w*"|\d{1,}))*(\s|\n)*\})){1}(\s|\n\s)*(,(\s|\n\s)*\{(\s|\n\s)*(("\w*"):(\s)*(("\w*"|\d{1,}))((,(\s|\n\s)*"\w*"):("\w*"|\d{1,}))*(\s|\n)*\})?)*(\s|\n\s)*\]))*(\s|\n\s)*\}){1}))((,(\s|\n\s)*"\w*"):(\s)*("\w*"|\d*|(\{(\s|\n\s)*(("\w*"):(\s)*("\w*(,\w+)*"|\d{1,}|\[(\s|\n\s)*(\{(\s|\n\s)*(("\w*"):(\s)*(("\w*"|\d{1,}))((,(\s|\n\s)*"\w*"):(\s)*("\w*"|\d{1,}))*(\s|\n)*\})){1}(\s|\n\s)*(,(\s|\n\s)*\{(\s|\n\s)*(("\w*"):(\s)*(("\w*"|\d{1,}))((,(\s|\n\s)*"\w*"):(\s)*("\w*"|\d{1,}))*(\s|\n)*\})?)*(\s|\n\s)*\]))((,(\s|\n\s)*"\w*"):(\s)*("\w*(,\w+)*"|\d{1,}|\[(\s|\n\s)*(\{(\s|\n\s)*(("\w*"):(\s)*(("\w*"|\d{1,}))((,(\s|\n\s)*"\w*"):(\s)*("\w*"|\d{1,}))*(\s|\n)*\})){1}(\s|\n\s)*(,(\s|\n\s)*\{(\s|\n\s)*(("\w*"):(\s)*(("\w*"|\d{1,}))((,(\s|\n\s)*"\w*"):("\w*"|\d{1,}))*(\s|\n)*\})?)*(\s|\n\s)*\]))*(\s|\n\s)*\}){1}))*(\s|\n)*\}"#) {
+            proptest_parse(&test_string);
+        }
+    }
+
     fn test_parse_string(test_string: &str) {
         let mut test_lexer = Lexer::new(
             test_string.as_bytes().iter().copied(),
@@ -249,8 +257,31 @@ mod tests {
 
         let token = test_lexer.next();
 
-        let parsed_token = string(test_string.as_bytes()).map(|(_, s)| s).ok();
+        let parsed_token = string(test_string.as_bytes()).map(|(_, s)| s);
 
+        let parsed_token = parsed_token.ok();
+        if let Some(parsed_token) = parsed_token {
+            if let Some(token) = token {
+                assert_eq!(parsed_token, token);
+            }
+        } else {
+            if let Some(token) = token {
+                assert!(matches!(token.kind, json_tools::TokenType::Invalid));
+            }
+        }
+    }
+
+    fn proptest_parse(test_string: &str) {
+        let mut test_lexer = Lexer::new(
+            test_string.as_bytes().iter().copied(),
+            json_tools::BufferType::Bytes(20),
+        );
+
+        let token = test_lexer.next();
+
+        let parsed_token = parse(test_string.as_bytes()).map(|(_, s)| s);
+
+        let parsed_token = parsed_token.ok();
         if let Some(parsed_token) = parsed_token {
             if let Some(token) = token {
                 assert_eq!(parsed_token, token);
@@ -290,6 +321,14 @@ mod tests {
         assert_eq!(
             most_parsing("a\"".as_bytes()),
             Ok(("\"".as_bytes(), "a".as_bytes()))
+        );
+    }
+
+    #[test]
+    fn test_parse_comma() {
+        assert_eq!(
+            comma(",a".as_bytes()),
+            Ok(("a".as_bytes(), TokenType::Comma))
         );
     }
 
@@ -334,6 +373,14 @@ mod tests {
                 TokenType::Number("107E2".as_bytes().to_vec())
             ))
         );
+
+        // assert_eq!(
+        //     parse("\"\"string\"\"".as_bytes()),
+        //     Ok((
+        //         "".as_bytes(),
+        //         TokenType::String("\"\"string\"\"".as_bytes().to_vec())
+        //     ))
+        // );
     }
 
     #[test]

@@ -17,7 +17,6 @@ all-features = true
 [dependencies]
 nom = { version = "7.1" }
 lalrpop-util = { version = "0.19", optional = true }
-json-tools = "1.1"
 
 [dev-dependencies]
 pretty_assertions = "^0.6"
