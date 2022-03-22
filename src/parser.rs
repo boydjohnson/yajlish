@@ -22,9 +22,7 @@ use crate::{
     lexer::{parse, TokenType},
     Context, Handler, Status,
 };
-use std::{
-    io::{BufRead},
-};
+use std::io::BufRead;
 
 /// Main Parser struct.
 pub struct Parser<'a, H> {
