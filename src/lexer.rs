@@ -374,13 +374,13 @@ mod tests {
             ))
         );
 
-        // assert_eq!(
-        //     parse("\"\"string\"\"".as_bytes()),
-        //     Ok((
-        //         "".as_bytes(),
-        //         TokenType::String("\"\"string\"\"".as_bytes().to_vec())
-        //     ))
-        // );
+        assert_eq!(
+            parse(r#""\"string\"""#.as_bytes()),
+            Ok((
+                "".as_bytes(),
+                TokenType::String(r#""\"string\"""#.as_bytes().to_vec())
+            ))
+        );
     }
 
     #[test]
