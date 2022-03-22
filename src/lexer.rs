@@ -1,11 +1,12 @@
 use nom::{
     branch::alt,
-    bytes::streaming::{tag, take_while1},
+    bytes::streaming::tag,
     character::streaming::multispace0,
-    combinator::{map, not, recognize},
+    combinator::{map, recognize},
+    error::ErrorKind,
     multi::many0,
     sequence::delimited,
-    IResult, Parser,
+    Err, IResult, Parser,
 };
 
 pub fn parse(s: &[u8]) -> IResult<&[u8], TokenType> {
@@ -24,39 +25,58 @@ pub fn parse(s: &[u8]) -> IResult<&[u8], TokenType> {
 }
 
 fn string_inner(s: &[u8]) -> IResult<&[u8], &[u8]> {
-    recognize(quotation_mark
-        .and(recognize(many0(
-            recognize(not(take_while1(is_control_character)
-                .or(quotation_mark)
-                .or(reverse_solidus)))
-            .or(quotation_mark
-                .or(solidus)
-                .or(reverse_solidus)
-                .or(backspace)
-                .or(formfeed)
-                .or(newline)
-                .or(carriage_return)
-                .or(horizontal_tab)
-                .or(u_with_hexadecimal_digits)),
-        ))).and(quotation_mark))(s)
+    recognize(
+        quotation_mark.and(
+            recognize(many0(
+                most_parsing.or(recognize(
+                    tag("\\").and(
+                        quotation_mark
+                            .or(solidus)
+                            .or(reverse_solidus)
+                            .or(backspace)
+                            .or(formfeed)
+                            .or(newline)
+                            .or(carriage_return)
+                            .or(horizontal_tab)
+                            .or(u_with_hexadecimal_digits),
+                    ),
+                )),
+            ))
+            .and(quotation_mark),
+        ),
+    )(s)
+}
+
+fn most_parsing(s: &[u8]) -> IResult<&[u8], &[u8]> {
+    if !s.is_empty() {
+        let (left, right) = s.split_at(1);
+
+        if !is_control_character(left[0]) {
+            Ok((right, left))
+        } else {
+            Err(Err::Error(nom::error::Error::new(s, ErrorKind::Escaped)))
+        }
+    } else {
+        Err(Err::Error(nom::error::Error::new(s, ErrorKind::Escaped)))
+    }
 }
 
 fn is_control_character(c: u8) -> bool {
     let c: char = c.into();
 
-    c.is_control()
+    c.is_control() || c == '"' || c == '\\'
 }
 
 fn quotation_mark(s: &[u8]) -> IResult<&[u8], &[u8]> {
-    nom::error::dbg_dmp(tag("\u{0022}"), "quote")(s)
+    tag("\u{0022}")(s)
 }
 
 fn solidus(s: &[u8]) -> IResult<&[u8], &[u8]> {
-    nom::error::dbg_dmp(tag("/"), "solidus")(s)
+    tag("/")(s)
 }
 
 fn reverse_solidus(s: &[u8]) -> IResult<&[u8], &[u8]> {
-    nom::error::dbg_dmp(tag("\\"), "reverse_solidus")(s)
+    tag("\\")(s)
 }
 
 fn backspace(s: &[u8]) -> IResult<&[u8], &[u8]> {
@@ -150,12 +170,13 @@ mod tests {
     use super::{string, TokenType};
 
     #[test]
-    fn test_parse_string() {
+    fn test_parse_string_success() {
+        let test_string = "\"hello\": 4";
 
-        let test_string = r#""""#;
+        test_parse_string(test_string);
+    }
 
-
-
+    fn test_parse_string(test_string: &str) {
         let mut test_lexer = Lexer::new(
             test_string.as_bytes().iter().copied(),
             json_tools::BufferType::Bytes(20),
@@ -163,7 +184,7 @@ mod tests {
 
         let token = test_lexer.next().unwrap();
 
-        let (rest, parsed_token) = string(test_string.as_bytes()).unwrap();
+        let (_, parsed_token) = string(test_string.as_bytes()).unwrap();
 
         assert_eq!(parsed_token, token);
     }
@@ -190,7 +211,7 @@ mod tests {
                     json_tools::Buffer::MultiByte(inner.to_vec()) == other.buf
                 }
                 (TokenType::Null, json_tools::TokenType::Null) => true,
-                (TokenType::Null, json_tools::TokenType::Invalid) => true,
+                (_, json_tools::TokenType::Invalid) => false,
                 (_, _) => false,
             }
         }
