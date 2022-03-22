@@ -2,12 +2,11 @@ use nom::{
     branch::alt,
     bytes::streaming::tag,
     character::{
-        complete::hex_digit1,
-        streaming::{hex_digit0, multispace0},
+        streaming::{hex_digit0},
     },
     combinator::{map, opt, recognize, verify},
     error::ErrorKind,
-    multi::{count, many0, many1},
+    multi::{many0},
     sequence::delimited,
     Err, IResult, Parser,
 };
@@ -126,7 +125,7 @@ fn right_bracket(s: &[u8]) -> IResult<&[u8], TokenType> {
 }
 
 fn string(s: &[u8]) -> IResult<&[u8], TokenType> {
-    map(string_inner, TokenType::String)(s)
+    map(string_inner, |v| TokenType::String(v.to_vec()))(s)
 }
 
 fn comma(s: &[u8]) -> IResult<&[u8], TokenType> {
@@ -150,17 +149,17 @@ fn null(s: &[u8]) -> IResult<&[u8], TokenType> {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum TokenType<'a> {
+pub enum TokenType {
     LeftBrace,
     RightBrace,
     LeftBracket,
     RightBracket,
     Comma,
     Colon,
-    String(&'a [u8]),
+    String(Vec<u8>),
     BoolTrue,
     BoolFalse,
-    Number(&'a [u8]),
+    Number(Vec<u8>),
     Null,
 }
 
@@ -171,7 +170,7 @@ mod tests {
     use super::{string, TokenType};
     use json_tools::{Lexer, Token};
     use pretty_assertions::assert_eq;
-    use proptest::prelude::*;
+    
 
     #[test]
     fn test_parse_string_success() {
@@ -227,7 +226,7 @@ mod tests {
         );
     }
 
-    impl<'a> PartialEq<Token> for TokenType<'a> {
+    impl PartialEq<Token> for TokenType {
         fn eq(&self, other: &Token) -> bool {
             match (self, &other.kind) {
                 (TokenType::LeftBrace, json_tools::TokenType::CurlyOpen) => true,
