@@ -1,19 +1,21 @@
 use nom::{
     branch::alt,
-    bytes::streaming::tag,
+    bytes::streaming::{is_a, tag},
     character::{
-        streaming::{hex_digit0},
+        complete::multispace0,
+        streaming::{digit0, digit1, hex_digit0},
     },
-    combinator::{map, opt, recognize, verify},
+    combinator::{eof, map, opt, recognize, verify},
     error::ErrorKind,
-    multi::{many0},
-    sequence::delimited,
+    multi::many0,
+    sequence::{delimited, preceded},
     Err, IResult, Parser,
 };
 
 pub fn parse(s: &[u8]) -> IResult<&[u8], TokenType> {
     alt((
         string,
+        number,
         left_brace,
         left_bracket,
         null,
@@ -104,8 +106,8 @@ fn u_with_hexadecimal_digits(s: &[u8]) -> IResult<&[u8], &[u8]> {
     recognize(tag("u").and(verify(hex_digit0, |s: &[u8]| s.len() == 4)))(s)
 }
 
-fn ws(s: &[u8]) -> IResult<&[u8], Option<&[u8]>> {
-    opt(alt((carriage_return, newline, horizontal_tab, tag(" "))))(s)
+fn ws(s: &[u8]) -> IResult<&[u8], &[u8]> {
+    multispace0(s)
 }
 
 fn left_brace(s: &[u8]) -> IResult<&[u8], TokenType> {
@@ -125,7 +127,7 @@ fn right_bracket(s: &[u8]) -> IResult<&[u8], TokenType> {
 }
 
 fn string(s: &[u8]) -> IResult<&[u8], TokenType> {
-    map(string_inner, |v| TokenType::String(v.to_vec()))(s)
+    delimited(ws, map(string_inner, |v| TokenType::String(v.to_vec())), ws)(s)
 }
 
 fn comma(s: &[u8]) -> IResult<&[u8], TokenType> {
@@ -148,6 +150,59 @@ fn null(s: &[u8]) -> IResult<&[u8], TokenType> {
     delimited(ws, map(tag("null"), |_| TokenType::Null), ws)(s)
 }
 
+fn number(s: &[u8]) -> IResult<&[u8], TokenType> {
+    delimited(ws, map(number_inner, |v| TokenType::Number(v.to_vec())), ws)(s)
+}
+
+fn digit_zero(s: &[u8]) -> IResult<&[u8], &[u8]> {
+    tag("0")(s)
+}
+
+fn digit_zero_or_multiple(s: &[u8]) -> IResult<&[u8], &[u8]> {
+    recognize(
+        digit_zero
+            .or(recognize(digit_1_9.and(nom::character::complete::digit0)))
+            .and(opt(exponential)),
+    )(s)
+}
+
+fn digit_1_9(s: &[u8]) -> IResult<&[u8], &[u8]> {
+    recognize(
+        tag("1")
+            .or(tag("2"))
+            .or(tag("3"))
+            .or(tag("4"))
+            .or(tag("5"))
+            .or(tag("6"))
+            .or(tag("7"))
+            .or(tag("8"))
+            .or(tag("9")),
+    )(s)
+}
+
+fn number_inner(s: &[u8]) -> IResult<&[u8], &[u8]> {
+    recognize(preceded(
+        opt(nom::bytes::complete::tag("-")),
+        recognize(digit_zero_or_multiple.and(opt(decimal_and_optional_exp))),
+    ))(s)
+}
+
+fn decimal_and_optional_exp(s: &[u8]) -> IResult<&[u8], &[u8]> {
+    recognize(
+        nom::bytes::complete::tag(".")
+            .and(nom::character::complete::digit1)
+            .and(opt(exponential)),
+    )(s)
+}
+
+fn exponential(s: &[u8]) -> IResult<&[u8], &[u8]> {
+    recognize(
+        nom::bytes::complete::is_a("eE")
+            .and(opt(is_a("+-")))
+            .and(nom::character::complete::digit1),
+    )(s)
+}
+
 #[derive(Debug, PartialEq)]
 pub enum TokenType {
     LeftBrace,
@@ -165,12 +220,11 @@ pub enum TokenType {
 
 #[cfg(test)]
 mod tests {
-    use crate::lexer::most_parsing;
+    use crate::lexer::{decimal_and_optional_exp, digit_zero_or_multiple, most_parsing, parse};
 
     use super::{string, TokenType};
     use json_tools::{Lexer, Token};
     use pretty_assertions::assert_eq;
-    
 
     #[test]
     fn test_parse_string_success() {
@@ -209,6 +263,19 @@ mod tests {
     }
 
     #[test]
+    fn test_digit_zero_or_multiple() {
+        assert_eq!(
+            digit_zero_or_multiple("0".as_bytes()),
+            Ok(("".as_bytes(), "0".as_bytes()))
+        );
+
+        assert_eq!(
+            digit_zero_or_multiple("4".as_bytes()),
+            Ok(("".as_bytes(), "4".as_bytes()))
+        );
+    }
+
+    #[test]
     fn test_most_parsing() {
         assert_eq!(
             most_parsing("45\"".as_bytes()),
@@ -223,6 +290,57 @@ mod tests {
         assert_eq!(
             most_parsing("a\"".as_bytes()),
             Ok(("\"".as_bytes(), "a".as_bytes()))
+        );
+    }
+
+    #[test]
+    fn test_parse() {
+        assert_eq!(
+            parse("[]".as_bytes()),
+            Ok(("]".as_bytes(), TokenType::LeftBracket))
+        );
+        assert_eq!(
+            parse("]".as_bytes()),
+            Ok(("".as_bytes(), TokenType::RightBracket))
+        );
+
+        assert_eq!(
+            parse("[\n[]\n]".as_bytes()),
+            Ok(("[]\n]".as_bytes(), TokenType::LeftBracket))
+        );
+
+        assert_eq!(
+            parse("4".as_bytes()),
+            Ok(("".as_bytes(), TokenType::Number("4".as_bytes().to_vec())))
+        );
+
+        assert_eq!(
+            parse("4.56e-8".as_bytes()),
+            Ok((
+                "".as_bytes(),
+                TokenType::Number("4.56e-8".as_bytes().to_vec())
+            ))
+        );
+
+        assert_eq!(
+            parse("107]".as_bytes()),
+            Ok(("]".as_bytes(), TokenType::Number("107".as_bytes().to_vec())))
+        );
+
+        assert_eq!(
+            parse("107E2".as_bytes()),
+            Ok((
+                "".as_bytes(),
+                TokenType::Number("107E2".as_bytes().to_vec())
+            ))
+        );
+    }
+
+    #[test]
+    fn test_decimal_and_exp() {
+        assert_eq!(
+            decimal_and_optional_exp(".456e-8".as_bytes()),
+            Ok(("".as_bytes(), ".456e-8".as_bytes()))
         );
     }
 
