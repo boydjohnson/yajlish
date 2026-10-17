@@ -22,8 +22,13 @@ pattern = ["dep:regex", "yajlish-schema-macros/pattern"]
 serde = ["dep:serde", "yajlish-schema-macros/serde"]
 
 [dev-dependencies]
+criterion = { version = "0.5", default-features = false }
 pretty_assertions.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
 regex = "1"
 jsonschema = { version = "0.59", default-features = false }
+
+[[bench]]
+name = "candidates"
+harness = false

@@ -250,6 +250,17 @@ fn expand(input: &Input) -> syn::Result<TokenStream> {
         }
         None => quote!(::core::option::Option::None),
     };
+    let roots_only: Vec<usize> = (0..input.schemas.len()).map(|i| ir.doc_roots[i]).collect();
+    let discriminator = match lower::discriminator(&ir, &roots_only) {
+        Some((path, values)) => {
+            let values = values.iter().map(|(v, i)| quote!((#v, #i)));
+            quote!(::core::option::Option::Some(::yajlish_schema::__private::Discriminator {
+                path: &[#(#path),*],
+                values: &[#(#values),*],
+            }))
+        }
+        None => quote!(::core::option::Option::None),
+    };
     let patterns = ir.patterns.iter();
     let match_first = input.match_first;
     let build = input.build;
@@ -276,6 +287,7 @@ fn expand(input: &Input) -> syn::Result<TokenStream> {
                 max_depth: #max_depth,
                 patterns: &[#(#patterns),*],
                 regexes: ::yajlish_schema::__private::Regexes::new(),
+                discriminator: #discriminator,
             };
         }
     };

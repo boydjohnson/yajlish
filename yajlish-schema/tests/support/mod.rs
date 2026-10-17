@@ -11,7 +11,7 @@ pub mod lower;
 use lower::{Doc, Ir, Kind, Lit, LowerError, Num, Type};
 use yajlish::{Context, Handler, Parser, Status};
 use yajlish_schema::{
-    __private::{Config, Outcome, Raw, Regexes, Runtime},
+    __private::{Config, Discriminator, Outcome, Raw, Regexes, Runtime},
     ir, SchemaError,
 };
 
@@ -110,11 +110,19 @@ fn check_pattern(p: &str) -> Result<(), String> {
     regex::Regex::new(p).map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Lower the schemas and build a validate-only `Config` with one candidate
-/// per schema.
+/// Lower the schemas and build a `Config` with one candidate per schema.
 pub fn config(
     schemas: &[serde_json::Value],
     match_first: bool,
+) -> Result<&'static Config, LowerError> {
+    config_with(schemas, match_first, true)
+}
+
+/// As `config`, choosing whether to detect a discriminator.
+pub fn config_with(
+    schemas: &[serde_json::Value],
+    match_first: bool,
+    discriminate: bool,
 ) -> Result<&'static Config, LowerError> {
     let docs: Vec<Doc> = schemas
         .iter()
@@ -146,6 +154,14 @@ pub fn config(
         max_depth: 256,
         patterns: leak(ir.patterns.iter().map(|p| leak_str(p)).collect()),
         regexes: Regexes::new(),
+        discriminator: if discriminate {
+            lower::discriminator(&ir, &ir.doc_roots).map(|(path, values)| Discriminator {
+                path: leak(path.iter().map(|p| leak_str(p)).collect()),
+                values: leak(values.iter().map(|(v, i)| (leak_str(v), *i)).collect()),
+            })
+        } else {
+            None
+        },
     })))
 }
 

@@ -704,3 +704,82 @@ pub fn lit(v: &Value) -> Lit {
         Value::Object(m) => Lit::Object(m.iter().map(|(k, v)| (k.clone(), lit(v))).collect()),
     }
 }
+
+/// A property path that every root pins to a different string `const` (or
+/// single-value `enum`): `(path, [(value, root index)])`.
+pub type Discriminator = (Vec<String>, Vec<(String, usize)>);
+
+/// Find a discriminator for `roots`, preferring the shortest path. Only
+/// direct `properties` (through plain `$ref`s) are followed, at most three
+/// levels deep.
+pub fn discriminator(ir: &Ir, roots: &[usize]) -> Option<Discriminator> {
+    if roots.len() < 2 {
+        return None;
+    }
+    let per_root: Vec<Vec<(Vec<String>, String)>> =
+        roots.iter().map(|&r| const_paths(ir, r, 0)).collect();
+    let mut candidates: Vec<&Vec<String>> = per_root[0].iter().map(|(p, _)| p).collect();
+    candidates.sort_by_key(|p| p.len());
+    'paths: for path in candidates {
+        let mut values: Vec<(String, usize)> = vec![];
+        for (i, paths) in per_root.iter().enumerate() {
+            let Some((_, v)) = paths.iter().find(|(p, _)| p == path) else {
+                continue 'paths;
+            };
+            if values.iter().any(|(seen, _)| seen == v) {
+                continue 'paths;
+            }
+            values.push((v.clone(), i));
+        }
+        return Some((path.clone(), values));
+    }
+    None
+}
+
+fn follow_plain_refs(ir: &Ir, mut node: usize) -> usize {
+    for _ in 0..32 {
+        match &ir.nodes[node].kind {
+            Kind::Schema(s)
+                if s.ref_.is_some()
+                    && s.types.is_none()
+                    && s.properties.is_empty()
+                    && s.const_.is_none()
+                    && s.enum_.is_none() =>
+            {
+                node = s.ref_.unwrap_or(node);
+            }
+            _ => break,
+        }
+    }
+    node
+}
+
+fn const_paths(ir: &Ir, node: usize, depth: usize) -> Vec<(Vec<String>, String)> {
+    let mut out = vec![];
+    let Kind::Schema(s) = &ir.nodes[follow_plain_refs(ir, node)].kind else {
+        return out;
+    };
+    for (key, child) in &s.properties {
+        let child = follow_plain_refs(ir, *child);
+        let Kind::Schema(c) = &ir.nodes[child].kind else {
+            continue;
+        };
+        let pinned = match (&c.const_, &c.enum_) {
+            (Some(Lit::Str(v)), _) => Some(v.clone()),
+            (None, Some(e)) if e.len() == 1 => match &e[0] {
+                Lit::Str(v) => Some(v.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(v) = pinned {
+            out.push((vec![key.clone()], v));
+        } else if depth < 2 {
+            for (mut p, v) in const_paths(ir, child, depth + 1) {
+                p.insert(0, key.clone());
+                out.push((p, v));
+            }
+        }
+    }
+    out
+}

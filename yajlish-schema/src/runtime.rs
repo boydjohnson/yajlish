@@ -38,38 +38,200 @@ struct Frame {
     index: u64,
 }
 
+/// A parse event with owned strings, for events buffered before the
+/// discriminator is seen.
+#[derive(Debug, Clone)]
+enum OwnedEv {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+    StartMap,
+    Key(String),
+    EndMap,
+    StartArray,
+    EndArray,
+}
+
+impl OwnedEv {
+    fn new(ev: &Ev<'_>) -> Self {
+        match *ev {
+            Ev::Null => OwnedEv::Null,
+            Ev::Bool(b) => OwnedEv::Bool(b),
+            Ev::Int(i) => OwnedEv::Int(i),
+            Ev::Float(x) => OwnedEv::Float(x),
+            Ev::Str(s) => OwnedEv::Str(s.to_owned()),
+            Ev::StartMap => OwnedEv::StartMap,
+            Ev::Key(k) => OwnedEv::Key(k.to_owned()),
+            Ev::EndMap => OwnedEv::EndMap,
+            Ev::StartArray => OwnedEv::StartArray,
+            Ev::EndArray => OwnedEv::EndArray,
+        }
+    }
+
+    fn ev(&self) -> Ev<'_> {
+        match self {
+            OwnedEv::Null => Ev::Null,
+            OwnedEv::Bool(b) => Ev::Bool(*b),
+            OwnedEv::Int(i) => Ev::Int(*i),
+            OwnedEv::Float(x) => Ev::Float(*x),
+            OwnedEv::Str(s) => Ev::Str(s),
+            OwnedEv::StartMap => Ev::StartMap,
+            OwnedEv::Key(k) => Ev::Key(k),
+            OwnedEv::EndMap => Ev::EndMap,
+            OwnedEv::StartArray => Ev::StartArray,
+            OwnedEv::EndArray => Ev::EndArray,
+        }
+    }
+}
+
+/// Events buffered, with their offsets, until the discriminator's value
+/// says which candidates to run.
+type Buffer = Vec<(u64, OwnedEv)>;
+
+/// Past this many buffered events without seeing the discriminator, run
+/// every candidate.
+const MAX_BUFFERED: usize = 4096;
+
+struct Pending {
+    buf: Buffer,
+    /// The last key of each open object in the record (`None` for arrays).
+    keys: Vec<Option<String>>,
+}
+
 struct Record {
+    /// Waiting for the discriminator; no candidate runs yet.
+    pending: Option<Pending>,
     /// Live candidates: schema index and matcher.
     cands: Vec<(usize, Matcher)>,
     passed: Vec<usize>,
     failed: Vec<(usize, Box<Failure>)>,
+    /// Candidates the discriminator ruled out, with the events up to it,
+    /// to compute their errors if no candidate matches after all.
+    rejected: Option<(Buffer, Vec<usize>)>,
     builder: Option<ValueBuilder>,
     depth: u32,
 }
 
 impl Record {
     fn new(cx: &Cx<'_>) -> Self {
-        Record {
-            cands: cx
-                .cfg
-                .roots
-                .iter()
-                .enumerate()
-                .map(|(i, &(_, node))| (i, Matcher::new(cx, node, 0)))
-                .collect(),
+        let cfg = cx.cfg;
+        let mut r = Record {
+            pending: None,
+            cands: vec![],
             passed: vec![],
             failed: vec![],
-            builder: if cx.cfg.build {
+            rejected: None,
+            builder: if cfg.build {
                 Some(ValueBuilder::default())
             } else {
                 None
             },
             depth: 0,
+        };
+        if cfg.discriminator.is_some() {
+            r.pending = Some(Pending {
+                buf: vec![],
+                keys: vec![],
+            });
+        } else {
+            r.start(cx, (0..cfg.roots.len()).collect());
         }
+        r
+    }
+
+    fn start(&mut self, cx: &Cx<'_>, which: Vec<usize>) {
+        self.cands = which
+            .into_iter()
+            .map(|i| (i, Matcher::new(cx, cx.cfg.roots[i].1, 0)))
+            .collect();
     }
 
     /// Feed one event; the outcome once the record's value has ended.
     fn feed(&mut self, cx: &Cx<'_>, ev: &Ev<'_>) -> Option<Outcome> {
+        match ev {
+            Ev::StartMap | Ev::StartArray => self.depth += 1,
+            Ev::EndMap | Ev::EndArray => self.depth -= 1,
+            _ => {}
+        }
+        let ended = self.depth == 0 && !matches!(ev, Ev::Key(_));
+
+        if let Some(p) = &mut self.pending {
+            p.buf.push((cx.offset, OwnedEv::new(ev)));
+            let disc = cx
+                .cfg
+                .discriminator
+                .as_ref()
+                .expect("pending needs a discriminator");
+            let mut chosen = None;
+            if let Ev::Str(value) = ev {
+                let at_path = p.keys.len() == disc.path.len()
+                    && p.keys
+                        .iter()
+                        .zip(disc.path)
+                        .all(|(k, d)| k.as_deref() == Some(*d));
+                if at_path {
+                    let hits: Vec<usize> = disc
+                        .values
+                        .iter()
+                        .filter(|(v, _)| v == value)
+                        .map(|&(_, i)| i)
+                        .collect();
+                    // No hit: every candidate fails; run them all for the
+                    // errors.
+                    chosen = Some(if hits.is_empty() {
+                        (0..cx.cfg.roots.len()).collect()
+                    } else {
+                        hits
+                    });
+                }
+            }
+            match ev {
+                Ev::StartMap | Ev::StartArray => p.keys.push(None),
+                Ev::Key(k) => {
+                    if let Some(top) = p.keys.last_mut() {
+                        *top = Some((*k).to_owned());
+                    }
+                }
+                Ev::EndMap | Ev::EndArray => {
+                    p.keys.pop();
+                }
+                _ => {}
+            }
+            if chosen.is_none() && (ended || p.buf.len() > MAX_BUFFERED) {
+                chosen = Some((0..cx.cfg.roots.len()).collect());
+            }
+            let chosen = chosen?;
+            let buf = self.pending.take().map(|p| p.buf).unwrap_or_default();
+            let rejected: Vec<usize> = (0..cx.cfg.roots.len())
+                .filter(|i| !chosen.contains(i))
+                .collect();
+            self.start(cx, chosen);
+            for (offset, owned) in &buf {
+                self.feed_live(
+                    &Cx {
+                        cfg: cx.cfg,
+                        offset: *offset,
+                    },
+                    &owned.ev(),
+                );
+            }
+            if !rejected.is_empty() {
+                self.rejected = Some((buf, rejected));
+            }
+        } else {
+            self.feed_live(cx, ev);
+        }
+
+        if ended {
+            Some(self.decide(cx))
+        } else {
+            None
+        }
+    }
+
+    fn feed_live(&mut self, cx: &Cx<'_>, ev: &Ev<'_>) {
         let mut i = 0;
         while i < self.cands.len() {
             match self.cands[i].1.feed(cx, ev) {
@@ -91,16 +253,31 @@ impl Record {
         if let Some(b) = &mut self.builder {
             b.event(ev);
         }
+    }
 
-        match ev {
-            Ev::StartMap | Ev::StartArray => self.depth += 1,
-            Ev::EndMap | Ev::EndArray => self.depth -= 1,
-            _ => {}
+    /// The errors of the candidates the discriminator ruled out: replay the
+    /// events up to the discriminator, where each of them fails.
+    fn rejected_failures(&mut self, cfg: &Config) {
+        let Some((buf, rejected)) = self.rejected.take() else {
+            return;
+        };
+        for idx in rejected {
+            let mut m = Matcher::new(&Cx { cfg, offset: 0 }, cfg.roots[idx].1, 0);
+            for (offset, owned) in &buf {
+                let cx = Cx {
+                    cfg,
+                    offset: *offset,
+                };
+                match m.feed(&cx, &owned.ev()) {
+                    Step::Continue => {}
+                    Step::Pass => break,
+                    Step::Fail(f) => {
+                        self.failed.push((idx, f));
+                        break;
+                    }
+                }
+            }
         }
-        if self.depth > 0 || matches!(ev, Ev::Key(_)) {
-            return None;
-        }
-        Some(self.decide(cx))
     }
 
     fn decide(&mut self, cx: &Cx<'_>) -> Outcome {
@@ -110,6 +287,7 @@ impl Record {
         match (&self.passed[..], cfg.match_first) {
             ([winner, ..], true) | ([winner], false) => Ok((*winner, value)),
             ([], _) => {
+                self.rejected_failures(cfg);
                 self.failed.sort_by_key(|(idx, _)| *idx);
                 let mut failed = std::mem::take(&mut self.failed);
                 if failed.len() == 1 {

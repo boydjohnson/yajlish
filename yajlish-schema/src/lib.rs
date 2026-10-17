@@ -118,6 +118,17 @@ pub mod __private {
         pub max_depth: u32,
         pub patterns: &'static [&'static str],
         pub regexes: Regexes,
+        /// A property every schema pins to a different string `const`.
+        pub discriminator: Option<Discriminator>,
+    }
+
+    /// Records are buffered until the string at `path` (object keys from
+    /// the record's root) is read; then only the schemas whose `const` it
+    /// matches run. The others would fail on that value anyway.
+    pub struct Discriminator {
+        pub path: &'static [&'static str],
+        /// The `const` value of each schema, with the schema's index.
+        pub values: &'static [(&'static str, usize)],
     }
 
     impl Config {

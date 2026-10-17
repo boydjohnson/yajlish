@@ -122,3 +122,51 @@ fn test_known_valid_instances() {
         assert!(support::validate_text(cfg, text.as_bytes(), 3).is_ok());
     }
 }
+
+fn arb_feature() -> impl Strategy<Value = Value> {
+    let geometry = (
+        prop::sample::select(&["Point", "Polygon", "Line"][..]),
+        arb_value(),
+        any::<bool>(),
+    )
+        .prop_map(|(t, coordinates, early)| {
+            let mut m = Map::new();
+            if early {
+                m.insert("type".into(), json!(t));
+            }
+            m.insert("coordinates".into(), coordinates);
+            if !early {
+                m.insert("type".into(), json!(t));
+            }
+            Value::Object(m)
+        });
+    (geometry, arb_value(), any::<bool>()).prop_map(|(geometry, properties, with_type)| {
+        let mut m = Map::new();
+        if with_type {
+            m.insert("type".into(), json!("Feature"));
+        }
+        m.insert("properties".into(), properties);
+        m.insert("geometry".into(), geometry);
+        Value::Object(m)
+    })
+}
+
+proptest! {
+    /// Waiting for the discriminator and running only the schemas it names
+    /// gives exactly the outcome of running every schema.
+    #[test]
+    fn test_discriminator_does_not_change_outcomes(
+        instance in prop_oneof![arb_feature(), arb_value()],
+        chunk in prop_oneof![Just(1usize), Just(usize::MAX)],
+    ) {
+        let schemas = [load("point_feature.schema.json"), load("polygon_feature.schema.json")];
+        let with = support::config_with(&schemas, false, true).unwrap();
+        let without = support::config_with(&schemas, false, false).unwrap();
+        prop_assert!(with.discriminator.is_some());
+        let text = serde_json::to_string(&instance).unwrap();
+        prop_assert_eq!(
+            support::validate_text(with, text.as_bytes(), chunk),
+            support::validate_text(without, text.as_bytes(), chunk)
+        );
+    }
+}
