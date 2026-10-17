@@ -1,17 +1,41 @@
 //! Validate a JSON stream against JSON Schemas, and build typed values from
 //! it, with a `yajlish::Handler` generated at compile time.
 //!
-//! ```ignore
+//! ```
+//! use yajlish::Parser;
+//! use yajlish_schema::Status;
+//!
 //! yajlish_schema::handler! {
 //!     /// Handler for GeoJSON features.
 //!     pub struct FeatureHandler;
 //!     at = ".features";        // optional: records are the elements of this array
-//!     match = unique;          // `unique` (default) or `first`
+//!     match = unique;          // `unique` (the default) or `first`
 //!     schemas {
-//!         Point   => "schemas/point.schema.json",
-//!         Polygon => "schemas/polygon.schema.json",
+//!         Point   => "tests/schemas/point_feature.schema.json",
+//!         Polygon => "tests/schemas/polygon_feature.schema.json",
 //!     }
 //! }
+//!
+//! let input = br#"{"type": "FeatureCollection", "features": [
+//!     {"type": "Feature", "properties": null,
+//!      "geometry": {"type": "Point", "coordinates": [1.5, 2]}}
+//! ]}"#;
+//!
+//! let mut points = vec![];
+//! let mut handler = FeatureHandler::new(|rec| {
+//!     match rec {
+//!         Ok(FeatureRecord::Point(p)) => points.push(p.geometry.coordinates),
+//!         Ok(FeatureRecord::Polygon(_)) => {}
+//!         Err(e) => eprintln!("{} at {}", e.keyword, e.instance_path),
+//!     }
+//!     Status::Continue
+//! });
+//! let mut parser = Parser::new(&mut handler);
+//! parser.parse(&mut &input[..])?;
+//! parser.finish_parse()?;
+//! handler.finish()?;
+//! assert_eq!(points, vec![vec![1.5, 2.0]]);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! The macro reads the schema files (paths relative to `CARGO_MANIFEST_DIR`)
