@@ -72,8 +72,10 @@
 //! ```
 
 mod common;
+mod decode;
 mod lexer;
 mod parser;
 
 pub use common::{Context, Enclosing, Handler, ParserStatus, Status};
+pub use decode::{decode_str, DecodeError};
 pub use parser::{ParseError, Parser};
