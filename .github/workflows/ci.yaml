@@ -37,7 +37,7 @@ jobs:
       uses: actions-rs/cargo@v1
       with:
         command: check
-        args: --benches
+        args: --workspace --benches
 
     - name: tests
       uses: actions-rs/cargo@v1
@@ -57,10 +57,10 @@ jobs:
         rustc --version
 
     - name: clippy
-      run: cargo clippy --tests --examples
+      run: cargo clippy --workspace --tests --examples
 
     - name: fmt
       run: cargo fmt --all -- --check
 
     - name: Docs
-      run: cargo doc --no-deps
+      run: cargo doc --workspace --no-deps

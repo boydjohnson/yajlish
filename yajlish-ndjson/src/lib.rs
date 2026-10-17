@@ -1,11 +1,9 @@
 //! This Handler implementation converts JSON
 //! with an array into new-line delimited JSON.
 //!
-//! Requires feature `ndjson`.
-//!
 
-use crate::{common::ParserStatus, Context, Handler, Status};
 use std::io::Write;
+use yajlish::{Context, Handler, ParserStatus, Status};
 
 /// Parser.
 pub struct NdJsonHandler<OUT> {
@@ -82,7 +80,7 @@ impl Select {
             Some(Selector::Identifier(ident)) => {
                 self.stack
                     .last()
-                    .map_or(false, |s| (**s).is_correct_location(ctx))
+                    .is_some_and(|s| (**s).is_correct_location(ctx))
                     && ident == val
             }
             _ => false,
@@ -94,7 +92,7 @@ impl Select {
             Some(Selector::Index(index)) => {
                 self.stack
                     .last()
-                    .map_or(false, |s| (**s).is_correct_location(ctx))
+                    .is_some_and(|s| (**s).is_correct_location(ctx))
                     && self.i == *index
             }
             _ => false,
@@ -112,7 +110,7 @@ impl Select {
         if self
             .stack
             .last()
-            .map_or(false, |s| (**s).is_correct_location(ctx))
+            .is_some_and(|s| (**s).is_correct_location(ctx))
             && ctx.parser_status() == ParserStatus::ArrayNeedVal
         {
             self.i += 1;
@@ -399,7 +397,7 @@ pub enum Selector {
 
 use lalrpop_util::lalrpop_mod;
 
-lalrpop_mod!(pub selector_parser);
+lalrpop_mod!(#[allow(clippy::all, clippy::pedantic)] pub selector_parser);
 
 pub use self::selector_parser::SelectorParser;
 
@@ -409,9 +407,9 @@ mod tests {
         selector_parser::{ArrayTokenParser, IdentifierTokenParser, SelectorParser},
         *,
     };
-    use crate::Parser;
     use pretty_assertions::assert_eq;
     use std::io::BufReader;
+    use yajlish::Parser;
 
     fn assert_ndjson(input: &[u8], selectors: Vec<Selector>, output: &[u8]) {
         let mut input = BufReader::new(input);

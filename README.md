@@ -2,7 +2,7 @@
 Write tools to parse json when you don't know its exact structure **and** can't load it all into memory.
 
 - based loosely on [yajl](https://github.com/yajl/yajl)
-- includes a JSON -> ndjson converter with the feature "ndjson"
+- the JSON -> ndjson converter lives in the [`yajlish-ndjson`](yajlish-ndjson) crate (it moved out of the `ndjson` feature in 0.5.0: replace `yajlish::ndjson_handler::` with `yajlish_ndjson::`)
 
 ![ci](https://github.com/boydjohnson/yajlish/actions/workflows/ci.yaml/badge.svg)
 

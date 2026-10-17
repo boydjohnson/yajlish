@@ -1,4 +1,4 @@
-use crate::ndjson_handler;
+use crate as ndjson_handler;
 use lalrpop_util::ParseError;
 
 grammar;

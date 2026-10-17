@@ -1,29 +1,32 @@
-[package]
-name = "yajlish"
-version = "0.4.0"
+[workspace]
+members = [".", "yajlish-ndjson"]
+
+[workspace.package]
 authors = ["Boyd Johnson <johnson.boyd@gmail.com>"]
 license = "Apache-2.0"
-description = "An event-based json parser with json-ndjson parser"
 repository = "https://github.com/boydjohnson/yajlish"
-readme = "README.md"
+edition = "2018"
+
+[workspace.dependencies]
+pretty_assertions = "^0.6"
+
+[package]
+name = "yajlish"
+version = "0.5.0"
+description = "An event-based json parser"
 keywords = ["json", "parser", "event-based"]
 categories = ["parsing"]
-edition = "2018"
 documentation = "https://docs.rs/yajlish"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
 
 [dependencies]
 json-tools = "^1.1"
-lalrpop-util = { version = "0.19", optional = true }
 
 [dev-dependencies]
-pretty_assertions = "^0.6"
-
-[build-dependencies]
-lalrpop = { version = "0.19", optional = true }
-
-
-[features]
-ndjson = ["lalrpop", "lalrpop-util"]
+pretty_assertions.workspace = true

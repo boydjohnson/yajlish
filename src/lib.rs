@@ -72,8 +72,6 @@
 //! ```
 
 mod common;
-#[cfg(feature = "ndjson")]
-pub mod ndjson_handler;
 mod parser;
 
 pub use common::{Context, Enclosing, Handler, ParserStatus, Status};
