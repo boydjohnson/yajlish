@@ -75,6 +75,7 @@ pub struct Context {
     status: ParserStatus,
     num_open_braces: usize,
     num_open_brackets: usize,
+    offset: u64,
 }
 
 impl Default for Context {
@@ -85,6 +86,7 @@ impl Default for Context {
 
             num_open_braces: 0,
             num_open_brackets: 0,
+            offset: 0,
         }
     }
 }
@@ -102,6 +104,17 @@ impl Context {
     #[must_use]
     pub fn num_open_braces(&self) -> usize {
         self.num_open_braces
+    }
+
+    /// The absolute byte offset in the stream of the token that produced
+    /// the current event.
+    #[must_use]
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub(crate) fn set_offset(&mut self, offset: u64) {
+        self.offset = offset;
     }
 
     /// The `ParserStatus`.

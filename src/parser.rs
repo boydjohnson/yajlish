@@ -83,6 +83,7 @@ impl<'a, H: Handler> Parser<'a, H> {
                     offset,
                 } => {
                     last_offset = offset;
+                    context.set_offset(offset);
                     (kind, bytes, offset)
                 }
                 Lexed::Eof => {

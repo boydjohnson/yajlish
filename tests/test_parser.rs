@@ -336,3 +336,58 @@ fn test_error_offsets() {
         );
     }
 }
+
+struct Offsets(Vec<u64>);
+
+impl Handler for Offsets {
+    fn handle_null(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_double(&mut self, ctx: &Context, _: f64) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_int(&mut self, ctx: &Context, _: i64) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_bool(&mut self, ctx: &Context, _: bool) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_string(&mut self, ctx: &Context, _: &str) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_start_map(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_end_map(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_map_key(&mut self, ctx: &Context, _: &str) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_start_array(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_end_array(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+}
+
+#[test]
+fn test_context_offsets() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser
+        .parse(&mut &b"{\"a\": [1, null], \"b\": \"x\"}"[..])
+        .unwrap();
+    assert_eq!(handler.0, vec![0, 1, 6, 7, 10, 14, 17, 22, 25]);
+}
