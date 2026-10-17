@@ -864,3 +864,130 @@ fn def_tokens(plan: &Plan, d: &Def, module: &Ident, vis: &Visibility) -> TokenSt
         }
     }
 }
+
+/// What the macro reports for schemas it cannot accept. (These run
+/// `expand` directly: trybuild compiles its test crates elsewhere, where
+/// schema paths relative to `CARGO_MANIFEST_DIR` would not resolve.)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error(input: &str) -> String {
+        let input: Input = syn::parse_str(input).expect("macro input parses");
+        match expand(&input) {
+            Ok(_) => panic!("expected an error for {}", input.name),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn one(file: &str) -> String {
+        error(&format!(
+            "struct H; schemas {{ A => \"tests/schemas/{}\" }}",
+            file
+        ))
+    }
+
+    fn assert_contains(msg: &str, parts: &[&str]) {
+        for p in parts {
+            assert!(msg.contains(p), "{:?} does not mention {:?}", msg, p);
+        }
+    }
+
+    #[test]
+    fn test_unsupported_keyword_names_file_pointer_and_keyword() {
+        assert_contains(
+            &one("unsupported.json"),
+            &[
+                "tests/schemas/unsupported.json#/items/properties/tags/uniqueItems",
+                "`uniqueItems`",
+                "unsupported keyword",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_remote_ref() {
+        assert_contains(
+            &one("remote_ref.json"),
+            &["remote_ref.json#/properties/a/$ref", "remote `$ref`"],
+        );
+    }
+
+    #[test]
+    fn test_other_dialect() {
+        assert_contains(&one("draft7.json"), &["draft7.json#/$schema", "2020-12"]);
+    }
+
+    #[test]
+    fn test_ref_cycle() {
+        assert_contains(&one("ref_cycle.json"), &["without consuming any input"]);
+    }
+
+    #[test]
+    fn test_name_collision_suggests_a_title() {
+        assert_contains(
+            &one("collision.json"),
+            &["`Thing`", "/properties/a", "/properties/b", "`title`"],
+        );
+    }
+
+    #[test]
+    fn test_dangling_ref() {
+        assert_contains(
+            &one("dangling_ref.json"),
+            &["#/$defs/missing", "points at nothing"],
+        );
+    }
+
+    #[test]
+    fn test_invalid_keyword_value() {
+        assert_contains(
+            &one("invalid_value.json"),
+            &["/minimum", "expected a number"],
+        );
+    }
+
+    #[test]
+    fn test_missing_file_and_bad_json() {
+        assert_contains(&one("nope.json"), &["cannot read", "nope.json"]);
+        assert_contains(&one("not_json.json"), &["not valid JSON"]);
+    }
+
+    #[test]
+    fn test_pattern_needs_the_feature() {
+        if cfg!(feature = "pattern") {
+            let input: Input =
+                syn::parse_str("struct H; schemas { A => \"tests/schemas/pattern.json\" }")
+                    .unwrap();
+            assert!(expand(&input).is_ok());
+        } else {
+            assert_contains(&one("pattern.json"), &["`pattern` feature"]);
+        }
+    }
+
+    #[test]
+    fn test_bad_options() {
+        let s = "schemas { A => \"tests/schemas/ok.json\" }";
+        assert_contains(
+            &error(&format!("struct H; at = \"features\"; {}", s)),
+            &["`.key`"],
+        );
+        assert_contains(
+            &error(&format!("struct H; at = \".a[x]\"; {}", s)),
+            &["bad index"],
+        );
+        assert!(
+            syn::parse_str::<Input>(&format!("struct H; envelope = \"x.json\"; {}", s))
+                .is_err_and(|e| e.to_string().contains("`envelope` needs `at`"))
+        );
+        assert!(
+            syn::parse_str::<Input>(&format!("struct H; match = most; {}", s))
+                .is_err_and(|e| e.to_string().contains("`unique` or `first`"))
+        );
+        assert!(syn::parse_str::<Input>("struct H; schemas {}")
+            .is_err_and(|e| e.to_string().contains("at least one")));
+        assert!(syn::parse_str::<Input>("struct H;")
+            .is_err_and(|e| e.to_string().contains("missing `schemas")));
+        assert!(syn::parse_str::<Input>(&format!("struct H; colour = 1; {}", s)).is_err());
+    }
+}
