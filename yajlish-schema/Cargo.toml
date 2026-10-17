@@ -13,7 +13,7 @@ edition = "2021"
 yajlish = { path = "..", version = "0.5" }
 yajlish-schema-macros = { path = "../yajlish-schema-macros", version = "0.1" }
 regex = { version = "1", optional = true }
-serde = { version = "1", optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
 
 [features]
 # Support the `pattern` keyword.

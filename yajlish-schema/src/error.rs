@@ -19,7 +19,8 @@ pub struct SchemaError {
     /// A human readable description.
     pub detail: String,
     /// For `match`, `anyOf`, `oneOf`: the error from each alternative.
-    pub causes: Vec<SchemaError>,
+    /// (A boxed slice keeps `SchemaError` small enough to return by value.)
+    pub causes: Box<[SchemaError]>,
 }
 
 impl std::fmt::Display for SchemaError {
@@ -106,7 +107,7 @@ impl Failure {
             keyword: self.keyword,
             offset: Some(self.offset),
             detail: self.detail,
-            causes,
+            causes: causes.into_boxed_slice(),
         }
     }
 }
@@ -116,7 +117,7 @@ impl SchemaError {
     /// make them relative to the record like their parent.
     fn prefix_path(&mut self, prefix: &str) {
         self.instance_path.insert_str(0, prefix);
-        for cause in &mut self.causes {
+        for cause in self.causes.iter_mut() {
             cause.prefix_path(prefix);
         }
     }

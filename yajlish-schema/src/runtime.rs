@@ -136,7 +136,7 @@ impl Record {
                         "matched {}; `match = unique` needs exactly one",
                         names.join(" and ")
                     ),
-                    causes: vec![],
+                    causes: Box::default(),
                 })
             }
         }
@@ -226,7 +226,7 @@ impl Runtime {
                             keyword: "string",
                             offset: Some(offset),
                             detail: format!("string cannot be decoded: {}", e),
-                            causes: vec![],
+                            causes: Box::default(),
                         });
                         return None;
                     }
@@ -353,7 +353,7 @@ impl Runtime {
             keyword: "",
             offset: None,
             detail,
-            causes: vec![],
+            causes: Box::default(),
         };
         if let Some(at) = self.cfg.at {
             if !self.found {
@@ -399,7 +399,7 @@ pub fn build_error(cfg: &Config, schema: usize, e: BuildError) -> SchemaError {
         keyword: "build",
         offset: None,
         detail: e.detail,
-        causes: vec![],
+        causes: Box::default(),
     }
 }
 

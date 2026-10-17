@@ -41,6 +41,7 @@ pub struct Node {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Kind {
     True,
     False,
@@ -587,7 +588,7 @@ impl<'a> Lowerer<'a> {
             None => "",
         };
         let joined = normalize(&format!("{}{}", dir, file));
-        let by = |f: &dyn Fn(&Doc) -> bool| self.docs.iter().position(|d| f(d));
+        let by = |f: &dyn Fn(&Doc) -> bool| self.docs.iter().position(f);
         by(&|d| normalize(&d.name) == joined)
             .or_else(|| by(&|d| d.name == file))
             .or_else(|| by(&|d| basename(&d.name) == file))

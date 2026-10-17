@@ -70,9 +70,6 @@
 //! `deprecated`, `readOnly`, `writeOnly`. `$id` is accepted at a document's
 //! root. Any other keyword is a compile error, never silently ignored.
 
-// SchemaError is the error type the plan specifies, returned by value.
-#![allow(clippy::result_large_err)]
-
 pub mod ir;
 
 mod error;
@@ -94,6 +91,16 @@ pub use serde;
 #[doc(hidden)]
 pub mod __private {
     use crate::ir::{Node, NodeId, PathSeg};
+
+    /// For optional, nullable fields: a present `null` is `Some(None)`.
+    #[cfg(feature = "serde")]
+    pub fn double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
+    where
+        T: serde::Deserialize<'de>,
+        D: serde::Deserializer<'de>,
+    {
+        serde::Deserialize::deserialize(d).map(Some)
+    }
     pub use crate::{
         runtime::{build_error, is_valid, Outcome, Raw, Runtime},
         value::{into_elements, into_members, into_string},

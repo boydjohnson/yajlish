@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A GeoJSON Feature with a MultiPolygon geometry.",
+  "type": "object",
+  "required": ["type", "geometry", "properties"],
+  "properties": {
+    "type": { "const": "Feature" },
+    "id": { "type": ["string", "integer"] },
+    "properties": { "type": ["object", "null"] },
+    "geometry": {
+      "title": "MultiPolygonGeometry",
+      "type": "object",
+      "required": ["type", "coordinates"],
+      "properties": {
+        "type": { "const": "MultiPolygon" },
+        "coordinates": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "$ref": "polygon_feature.schema.json#/$defs/linear_ring" }
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
