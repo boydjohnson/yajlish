@@ -185,7 +185,8 @@ impl<const N: usize> Handler for Recorder<'_, N> {
 
 /// Stands in for `parser::number_value` under Kani, where float parsing is
 /// too large to check. Deterministic in `text`, so harnesses that compare
-/// two runs see the same value for the same token.
+/// two runs see the same value for the same token. For the K3 parser
+/// harnesses.
 #[cfg(kani)]
 #[allow(dead_code)] // Only named by `kani::stub`.
 fn stub_number_value(
@@ -232,20 +233,15 @@ fn check_chunked_parse_is_invisible<const N: usize>(input: &[u8], sizes: &[usize
     );
 }
 
-/// Input bound in bytes. See "Bounds" in `plans/04-kani-bolero.md`.
-const CHUNKED_PARSE_BOUND: usize = 3;
+/// Input size of the Bolero harness's small form.
+const CHUNKED_PARSE_BOUND: usize = 6;
 
 /// `chunking_is_invisible` at the event level, through one `parse` call.
 /// The exhaustive form of `tests/test_split_points.rs`.
+// Not a Kani proof: CBMC does not finish `Parser` even on two
+// symbolic bytes (see "Bounds" in `plans/04-kani-bolero.md`).
+// `tests::exhaustive_short_parse_inputs` is the exhaustive form instead.
 #[test]
-#[cfg_attr(
-    kani,
-    kani::proof,
-    kani::unwind(5),
-    kani::stub(crate::parser::number_value, stub_number_value),
-    kani::stub(std::fmt::format, super::stub_format),
-    kani::stub(<crate::lexer::Token as logos::Logos>::lex, super::ref_lexer::ref_lex)
-)]
 fn chunked_parse_is_invisible() {
     bolero::check!()
         .with_type::<([u8; CHUNKED_PARSE_BOUND], u8, u8)>()
@@ -271,6 +267,20 @@ fn chunked_parse_is_invisible_fuzz() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `chunked_parse_is_invisible` over the inputs of
+    /// `exhaustive_short_stream_inputs`, with the real `number_value` and
+    /// logos.
+    #[test]
+    fn exhaustive_short_parse_inputs() {
+        let check = |input: &[u8]| {
+            for split in 0..=input.len() {
+                check_chunked_parse_is_invisible::<8>(input, &[split]);
+            }
+        };
+        crate::verify::for_each_shorter_input(crate::verify::ENUM_BYTES + 1, check);
+        crate::verify::for_each_alphabet_input(crate::verify::ENUM_ALPHABET, check);
+    }
 
     /// The strict checks hold on valid documents, so a failure under Kani
     /// is the parser's, not the `Recorder`'s.

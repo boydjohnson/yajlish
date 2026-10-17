@@ -201,33 +201,12 @@ fn ref_lexer_matches_logos_fuzz() {
 mod tests {
     use super::*;
 
-    /// One byte from each class the grammar distinguishes, plus a few
-    /// that only matter in context.
-    const ALPHABET: &[u8] = b" \n\"\\/{}[]:,-+.0159eEtrufalsnbxA\x01\x1f\x7f\xc3\xff";
-
     /// Every input up to two bytes, and every input up to four bytes over
     /// `ALPHABET`.
     #[test]
     fn ref_lexer_matches_logos_exhaustively() {
-        for a in 0..=255u8 {
-            check_ref_matches_logos(&[a]);
-            for b in 0..=255u8 {
-                check_ref_matches_logos(&[a, b]);
-            }
-        }
-        let mut input = Vec::with_capacity(5);
-        fn go(input: &mut Vec<u8>, depth: usize) {
-            check_ref_matches_logos(input);
-            if depth == 0 {
-                return;
-            }
-            for &c in ALPHABET {
-                input.push(c);
-                go(input, depth - 1);
-                input.pop();
-            }
-        }
-        go(&mut input, 4);
+        crate::verify::for_each_shorter_input(3, check_ref_matches_logos);
+        crate::verify::for_each_alphabet_input(4, check_ref_matches_logos);
     }
 
     #[test]

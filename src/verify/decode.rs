@@ -25,11 +25,7 @@ use crate::{
 use logos::Logos;
 
 #[cfg(kani)]
-use super::for_each_prefix;
-#[cfg(kani)]
 use crate::decode::hex4;
-#[cfg(kani)]
-use std::borrow::Cow;
 
 /// Input bound for `decode_str`, in bytes, quotes included. See "Bounds"
 /// in `plans/04-kani-bolero.md` for the measured Kani times.
@@ -69,11 +65,11 @@ fn decode_never_panics() {
 }
 
 /// The `ok_or(LoneSurrogate)` after joining a surrogate pair is dead code:
-/// every high/low pair is a scalar value. Checked both on the arithmetic and
-/// through `decode_str` on `"\uHHHH\uLLLL"`, against `char::decode_utf16`.
+/// every high/low pair is a scalar value. Running `decode_str` on the pair
+/// is out of Kani's reach (14 bytes), so `every_surrogate_pair_decodes`
+/// enumerates all pairs instead.
 #[cfg(kani)]
 #[kani::proof]
-#[kani::unwind(14)]
 fn surrogate_pair_is_always_scalar() {
     let high: u16 = kani::any_where(|u| (0xD800..=0xDBFF).contains(u));
     let low: u16 = kani::any_where(|u| (0xDC00..=0xDFFF).contains(u));
@@ -81,25 +77,34 @@ fn surrogate_pair_is_always_scalar() {
     let c = char::from_u32(scalar);
     kani::cover!(c.is_none(), "a surrogate pair that is not a scalar value");
     assert!(c.is_some());
+}
 
-    // Any two \u escapes. Digit case is `hex4_matches_from_str_radix`'s job.
-    let units: [u16; 2] = kani::any();
-    let mut raw = *b"\"\\u0000\\u0000\"";
-    for (unit, at) in units.iter().zip([3, 9]) {
-        for k in 0..4 {
-            raw[at + k] = b"0123456789abcdef"[usize::from((unit >> (12 - 4 * k)) & 0xF)];
+/// `decode_str` on every `"\uXXXX"` and on every high surrogate followed
+/// by every low one agrees with `char::decode_utf16`.
+#[test]
+fn every_surrogate_pair_decodes() {
+    let check = |units: &[u16]| {
+        let mut raw = String::from("\"");
+        for unit in units {
+            raw.push_str(&format!("\\u{:04x}", unit));
         }
+        raw.push('"');
+        let want: Result<String, _> = char::decode_utf16(units.iter().copied()).collect();
+        match (decode_str(&raw), want) {
+            (Ok(got), Ok(want)) => assert_eq!(got, want),
+            (Err(DecodeError::LoneSurrogate { .. }), Err(_)) => {}
+            (got, want) => panic!("{}: {:?} vs {:?}", raw, got, want),
+        }
+    };
+    for unit in 0..=u16::MAX {
+        check(&[unit]);
     }
-    // SAFETY: `raw` is ASCII: quotes, backslashes, `u` and hex digits.
-    // Checking that with `from_utf8` would only cost Kani time.
-    let raw = unsafe { std::str::from_utf8_unchecked(&raw) };
-    let want: Result<String, _> = char::decode_utf16(units).collect();
-    match (decode_str(raw), want) {
-        (Ok(got), Ok(want)) => {
-            assert_eq!(got, want);
+    for high in 0xD800..=0xDBFF {
+        for low in 0xDC00..=0xDFFF {
+            check(&[high, low]);
         }
-        (Err(DecodeError::LoneSurrogate { .. }), Err(_)) => {}
-        _ => panic!("decode_str and decode_utf16 disagree"),
+        check(&[high, 0x0041]);
+        check(&[high, 0xD800]);
     }
 }
 
@@ -131,6 +136,11 @@ fn lexer_and_decoder_agree() {
         .with_type::<([u8; DECODE_BOUND], u8)>()
         .cloned()
         .for_each(|(buf, len)| {
+            // Under Kani the input is all of `buf`, and a string token
+            // spanning it starts and ends with a quote. Saves exploring
+            // every other first and last byte.
+            #[cfg(kani)]
+            kani::assume(buf[0] == b'"' && buf[DECODE_BOUND - 1] == b'"');
             for_each_input(&buf, len, check_lexer_and_decoder_agree);
         });
 }
@@ -211,14 +221,30 @@ fn decode_matches_serde_json() {
 #[kani::unwind(6)]
 fn borrowed_iff_no_escape() {
     let buf: [u8; DECODE_BOUND] = kani::any();
-    for_each_prefix(&buf, |b| {
-        let Some(raw) = as_utf8(b) else {
-            return;
-        };
-        if let Ok(value) = decode_str(raw) {
-            let body = &b[1..b.len() - 1];
-            let borrowed = matches!(value, Cow::Borrowed(_));
-            assert_eq!(borrowed, !body.contains(&b'\\'));
+    for_each_input(&buf, 0, check_borrowed_iff_no_escape);
+}
+
+/// `Cow::Borrowed` exactly when the body has no backslash.
+fn check_borrowed_iff_no_escape(b: &[u8]) {
+    let Some(raw) = as_utf8(b) else {
+        return;
+    };
+    if let Ok(value) = decode_str(raw) {
+        let body = &b[1..b.len() - 1];
+        let borrowed = matches!(value, std::borrow::Cow::Borrowed(_));
+        assert_eq!(borrowed, !body.contains(&b'\\'));
+    }
+}
+
+/// The inputs Kani leaves to enumeration: every byte string shorter than
+/// `DECODE_BOUND`.
+#[test]
+fn exhaustive_short_decode_inputs() {
+    super::for_each_shorter_input(DECODE_BOUND, |b| {
+        if let Some(raw) = as_utf8(b) {
+            let _ = decode_str(raw);
         }
+        check_borrowed_iff_no_escape(b);
+        check_lexer_and_decoder_agree(b);
     });
 }

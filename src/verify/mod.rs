@@ -38,46 +38,99 @@ use std::io::{BufRead, Read};
 
 /// Calls `f` on every prefix of `buf`, shortest first.
 ///
-/// Under Kani this beats one prefix of nondeterministic length by orders
-/// of magnitude: with a symbolic length, every loop over the input (logos's
-/// states, UTF-8 validation, `decode_str`, `hex4`) is unrolled to the
-/// unwind bound on every path. With a concrete length each loop stops at
-/// the end of the input.
+/// Under Kani a concrete length beats one nondeterministic length by
+/// orders of magnitude: with a symbolic length, every loop over the input
+/// (logos's states, UTF-8 validation, `decode_str`) is unrolled to the
+/// unwind bound on every path.
+#[cfg(kani)]
 pub(crate) fn for_each_prefix<const N: usize>(buf: &[u8; N], mut f: impl FnMut(&[u8])) {
     for len in 0..=N {
         f(&buf[..len]);
     }
 }
 
-/// The input of a shared harness. Under Kani, every prefix of `buf` (see
-/// `for_each_prefix`). Otherwise the one prefix of length `len % (N + 1)`
-/// that Bolero picked.
+/// The input of a shared harness. Under Kani, all of `buf`: exactly `N`
+/// symbolic bytes. Shorter inputs are enumerated by the `exhaustive_*`
+/// unit tests, which is far cheaper than asking Kani for them too, so
+/// together the two cover every input up to `N` bytes. Otherwise the one
+/// prefix of length `len % (N + 1)` that Bolero picked.
 pub(crate) fn for_each_input<const N: usize>(buf: &[u8; N], len: u8, mut f: impl FnMut(&[u8])) {
     if cfg!(kani) {
-        for_each_prefix(buf, f);
+        f(&buf[..]);
     } else {
         f(&buf[..usize::from(len) % (N + 1)]);
     }
 }
 
-/// Like `for_each_input`, with a split point `k <= input.len()`: under
-/// Kani every prefix with every split, otherwise the one Bolero picked.
+/// The input and split point of a Bolero harness: the prefix of length
+/// `len % (N + 1)`, split at `split % (input.len() + 1)`.
 pub(crate) fn for_each_split<const N: usize>(
     buf: &[u8; N],
     len: u8,
     split: u8,
     mut f: impl FnMut(&[u8], usize),
 ) {
-    if cfg!(kani) {
-        for_each_prefix(buf, |input| {
-            for k in 0..=input.len() {
-                f(input, k);
-            }
-        });
-    } else {
-        let input = &buf[..usize::from(len) % (N + 1)];
-        f(input, usize::from(split) % (input.len() + 1));
+    let input = &buf[..usize::from(len) % (N + 1)];
+    f(input, usize::from(split) % (input.len() + 1));
+}
+
+/// Calls `f` on every byte string shorter than `n` bytes, whatever the
+/// bytes: the inputs that `for_each_input` leaves out under Kani, and the
+/// exhaustive form of the stream harnesses.
+#[cfg(test)]
+pub(crate) fn for_each_shorter_input(n: usize, mut f: impl FnMut(&[u8])) {
+    fn go(input: &mut Vec<u8>, left: usize, f: &mut impl FnMut(&[u8])) {
+        f(input);
+        if left == 0 {
+            return;
+        }
+        for c in 0..=255u8 {
+            input.push(c);
+            go(input, left - 1, f);
+            input.pop();
+        }
     }
+    if n == 0 {
+        return;
+    }
+    let mut count = 0usize;
+    go(&mut Vec::with_capacity(n), n - 1, &mut |b: &[u8]| {
+        count += 1;
+        f(b);
+    });
+    assert_eq!(count, (0..n as u32).map(|k| 256usize.pow(k)).sum::<usize>());
+}
+
+/// How far the `exhaustive_*` tests of the stream lexer and parser go:
+/// all byte strings up to `ENUM_BYTES` long, and strings over `ALPHABET`
+/// up to `ENUM_ALPHABET` long.
+#[cfg(test)]
+pub(crate) const ENUM_BYTES: usize = 2;
+#[cfg(test)]
+pub(crate) const ENUM_ALPHABET: usize = 4;
+
+/// One byte from each class of bytes the JSON grammar tells apart, plus a
+/// few that only matter in context (`e`, `u`, hex digits, a UTF-8 lead
+/// byte). Strings over it reach the lexer's behaviours at lengths where
+/// all 256 byte values are too many to enumerate.
+#[cfg(test)]
+pub(crate) const ALPHABET: &[u8] = b" \n\"\\/{}[]:,-+.0159eEtrufalsnbxA\x01\x1f\x7f\xc3\xff";
+
+/// Calls `f` on every string over `ALPHABET` of at most `max_len` bytes.
+#[cfg(test)]
+pub(crate) fn for_each_alphabet_input(max_len: usize, mut f: impl FnMut(&[u8])) {
+    fn go(input: &mut Vec<u8>, left: usize, f: &mut impl FnMut(&[u8])) {
+        f(input);
+        if left == 0 {
+            return;
+        }
+        for &c in ALPHABET {
+            input.push(c);
+            go(input, left - 1, f);
+            input.pop();
+        }
+    }
+    go(&mut Vec::with_capacity(max_len), max_len, &mut f);
 }
 
 /// `b` as a `str` if it is UTF-8: `std::str::from_utf8(b).ok()`, but under
@@ -186,6 +239,9 @@ pub(crate) fn same_result(a: &Result<(), ParseError>, b: &Result<(), ParseError>
 /// Stands in for `std::fmt::format` under Kani: building error messages
 /// dominates solver time, and harnesses compare errors by variant and
 /// offset only (`same_error`), never by message.
+///
+/// No harness needs it yet; the K3 parser harnesses will, together with
+/// `parser::stub_number_value`.
 #[cfg(kani)]
 #[allow(dead_code)] // Only named by `kani::stub`.
 pub(crate) fn stub_format(_args: std::fmt::Arguments<'_>) -> String {

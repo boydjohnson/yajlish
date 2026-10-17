@@ -28,14 +28,15 @@ use crate::lexer::{is_number_prefix, may_extend, string_may_extend, Token};
 #[cfg(kani)]
 use logos::Logos;
 
-/// Input bounds, in bytes. See "Bounds" in `plans/04-kani-bolero.md` for
-/// the measured Kani times.
+/// Kani input bounds, in bytes. See "Bounds" in `plans/04-kani-bolero.md`
+/// for the measured times.
 #[cfg(kani)]
 const NUMBER_TOKEN_BOUND: usize = 4;
 /// For the body and for the suffix.
 #[cfg(kani)]
 const STRING_PART_BOUND: usize = 2;
-const STREAM_BOUND: usize = 3;
+/// Input size of the Bolero stream harnesses' small form.
+const STREAM_BOUND: usize = 6;
 
 /// Up to `N` bytes: `buf[..len]` for a nondeterministic `len <= N`.
 #[cfg(kani)]
@@ -144,28 +145,33 @@ fn keyword_may_extend() {
 }
 
 /// No token longer than `max_token_len` is returned, chunked or not.
-#[cfg(kani)]
-#[kani::proof]
-#[kani::unwind(5)]
-#[kani::stub(std::fmt::format, super::stub_format)]
-#[kani::stub(<crate::lexer::Token as logos::Logos>::lex, super::ref_lexer::ref_lex)]
+// Not a Kani proof: CBMC does not finish `StreamLexer` even on two
+// symbolic bytes (see "Bounds" in `plans/04-kani-bolero.md`).
+// `exhaustive_short_stream_inputs` is the exhaustive form instead.
+#[test]
 fn max_token_len_is_enforced() {
-    let buf: [u8; STREAM_BOUND] = kani::any();
-    let max: usize = kani::any_where(|&m| m <= 8);
-    for_each_split(&buf, 0, 0, |input, split| {
-        let split = [split];
-        let mut reader = Chunks::new(input, &split);
-        let mut lexer = StreamLexer::new(&mut reader, max, 0);
-        for _ in 0..=input.len() {
-            match lexer.next() {
-                Ok(Lexed::Token { bytes, .. }) => {
-                    assert!(bytes.len() <= max);
-                }
-                Ok(Lexed::Eof) | Err(_) => return,
+    bolero::check!()
+        .with_type::<([u8; STREAM_BOUND], u8, u8, u8)>()
+        .cloned()
+        .for_each(|(buf, len, split, max)| {
+            for_each_split(&buf, len, split, |input, split| {
+                check_max_token_len(input, &[split], usize::from(max % 9));
+            });
+        });
+}
+
+fn check_max_token_len(input: &[u8], sizes: &[usize], max: usize) {
+    let mut reader = Chunks::new(input, sizes);
+    let mut lexer = StreamLexer::new(&mut reader, max, 0);
+    for _ in 0..=input.len() {
+        match lexer.next() {
+            Ok(Lexed::Token { bytes, .. }) => {
+                assert!(bytes.len() <= max);
             }
+            Ok(Lexed::Eof) | Err(_) => return,
         }
-        unreachable!("more tokens than bytes");
-    });
+    }
+    unreachable!("more tokens than bytes");
 }
 
 /// Token offsets strictly increase, and each is where the token's bytes
@@ -189,14 +195,10 @@ fn check_offsets(input: &[u8], sizes: &[usize]) {
     unreachable!("more tokens than bytes");
 }
 
+// Not a Kani proof: CBMC does not finish `StreamLexer` even on two
+// symbolic bytes (see "Bounds" in `plans/04-kani-bolero.md`).
+// `exhaustive_short_stream_inputs` is the exhaustive form instead.
 #[test]
-#[cfg_attr(
-    kani,
-    kani::proof,
-    kani::unwind(5),
-    kani::stub(std::fmt::format, super::stub_format),
-    kani::stub(<crate::lexer::Token as logos::Logos>::lex, super::ref_lexer::ref_lex)
-)]
 fn offsets_are_monotone() {
     bolero::check!()
         .with_type::<([u8; STREAM_BOUND], u8, u8)>()
@@ -244,14 +246,10 @@ fn check_chunking_is_invisible(input: &[u8], sizes: &[usize]) {
 
 /// The exhaustive form of `test_every_chunk_size_matches_unchunked`: any
 /// input up to 6 bytes, split anywhere.
+// Not a Kani proof: CBMC does not finish `StreamLexer` even on two
+// symbolic bytes (see "Bounds" in `plans/04-kani-bolero.md`).
+// `exhaustive_short_stream_inputs` is the exhaustive form instead.
 #[test]
-#[cfg_attr(
-    kani,
-    kani::proof,
-    kani::unwind(5),
-    kani::stub(std::fmt::format, super::stub_format),
-    kani::stub(<crate::lexer::Token as logos::Logos>::lex, super::ref_lexer::ref_lex)
-)]
 fn chunking_is_invisible() {
     bolero::check!()
         .with_type::<([u8; STREAM_BOUND], u8, u8)>()
@@ -271,4 +269,23 @@ fn chunking_is_invisible_fuzz() {
             let sizes: Vec<usize> = sizes.iter().map(|&s| usize::from(s)).collect();
             check_chunking_is_invisible(input, &sizes);
         });
+}
+
+/// Exhaustive over short inputs, with logos itself rather than the stub:
+/// every byte string up to `ENUM_BYTES` bytes and every string over
+/// `ALPHABET` up to `ENUM_ALPHABET` bytes, each with every split. This
+/// reaches further than Kani does here.
+#[test]
+fn exhaustive_short_stream_inputs() {
+    let check = |input: &[u8]| {
+        for split in 0..=input.len() {
+            check_offsets(input, &[split]);
+            check_chunking_is_invisible(input, &[split]);
+            for max in [0, 1, 2, 3, 8] {
+                check_max_token_len(input, &[split], max);
+            }
+        }
+    };
+    super::for_each_shorter_input(super::ENUM_BYTES + 1, check);
+    super::for_each_alphabet_input(super::ENUM_ALPHABET, check);
 }

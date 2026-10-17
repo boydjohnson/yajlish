@@ -33,7 +33,11 @@ Kani is **not** used for end-to-end RFC 8259 conformance over arbitrary document
 ```toml
 # each crate that has harnesses
 [dev-dependencies]
-bolero = "0.13"          # pin to the current release when K0 lands
+bolero = "0.13.7"
+
+# yajlish only: under `cargo kani`, build logos's state-machine codegen (see "Stubs").
+[target.'cfg(kani)'.dependencies]
+logos = { version = "0.16", features = ["state_machine_codegen"] }
 
 [lints.rust]
 # CI builds with RUSTFLAGS=-Dwarnings, and rustc's check-cfg warns on unknown cfgs.
@@ -53,7 +57,8 @@ src/verify/mod.rs           #[cfg(any(test, kani))] mod verify;  from lib.rs
 src/verify/lexer.rs         lexer + may_extend proofs
 src/verify/decode.rs        decode_str + hex4 proofs
 src/verify/parser.rs        state-machine proofs, Recorder handler
-src/verify/reference.rs     the reference token-sequence recognizer
+src/verify/ref_lexer.rs     reference lexer that stands in for logos under Kani (K1)
+src/verify/reference.rs     the reference token-sequence recognizer (K3)
 yajlish-ndjson/src/verify.rs
 yajlish-schema/src/verify.rs
 yajlish-schema-macros/tests/fuzz_names.rs   (public helpers only, Bolero only)
@@ -89,11 +94,13 @@ Commands:
 
 ```
 cargo test --workspace                                  # every Bolero harness, random inputs
-cargo kani --tests -p yajlish                           # every Kani proof in a crate
-cargo kani --tests -p yajlish --harness parser_never_panics
+cargo kani --tests -p yajlish@0.5.0 -Z stubbing         # every Kani proof in a crate
+cargo kani --tests -p yajlish@0.5.0 -Z stubbing --harness verify::lexer::complete_number_is_prefix --exact
 cargo bolero test -p yajlish verify::parser::parser_never_panics --engine libfuzzer -T 5min
 cargo kani --tests -Z concrete-playback --concrete-playback=print --harness <h>   # counterexample -> unit test
 ```
+
+Measured corrections (K0): `-p yajlish` is ambiguous because the `yajlish_04` bench dev-dependency is also named `yajlish`, so it is `-p yajlish@0.5.0`; `#[kani::stub]` needs `-Z stubbing`; and Kani drops `--features dep/feature`, which is why the logos feature goes through a `cfg(kani)` target dependency.
 
 Concrete playback is how a failing proof turns into a regular `#[test]`: every Kani counterexample found during this plan gets committed as a unit test next to the code it breaks.
 
@@ -101,27 +108,40 @@ Concrete playback is how a failing proof turns into a regular `#[test]`: every K
 
 ### Bounds
 
-| Harness family | Input bound | Unwind | Reason |
-|---|---|---|---|
-| Lexer predicates (`is_number_prefix`, `string_may_extend`) | 8 bytes | 10 | Loops are one iteration per byte. |
-| `hex4`, surrogate math | 4 / 12 bytes | 6 / 14 | Fixed-length by construction. |
-| `decode_str` | 10 bytes (two quotes + 8) | 12 | Covers one surrogate pair `😀` only at 14, so the pair proof gets its own harness with a fixed shape. |
-| Parser state machine | 8 bytes, start 6 | 10 | logos runs per token, `StreamLexer` loops per refill, `parse_tokens` per token. Grow until solver time hits ~2 min. |
-| Chunk independence | 6 bytes, any split | 8 | Runs the lexer twice. |
-| Selector parser | 6 bytes | 8 | |
-| `num::cmp_int_float`, `FromValue for i64` | all `i64` × all `f64` | none | No loops; floats are bit-precise in Kani. |
+Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac, one harness at a time (`cargo kani --tests -p yajlish@0.5.0 -Z stubbing`, 12 harnesses, about 9 minutes in all). The bounds are much smaller than the starting points this table used to list; the reasons are below the table.
 
-These are starting points. I could not run `cargo kani` while writing this plan, so solver times are unmeasured; K0 records the measured time per harness in this file.
+| Harness | Kani input | Unwind | Time | Rest of the bound covered by |
+|---|---|---|---|---|
+| `number_prefix_is_prefix_closed` | ≤ 8 bytes | 10 | 6 s | |
+| `number_prefix_always_extends` | ≤ 8 bytes | 10 | 19 s | |
+| `string_may_extend_never_panics` | ≤ 8 bytes | 10 | 27 s | |
+| `keyword_may_extend` | ≤ 6 bytes | 8 | 17 s | |
+| `complete_number_is_prefix` | ≤ 4 bytes | 6 | 38 s | stubbed lexer, see "Stubs" |
+| `string_may_extend_is_sound` | body ≤ 2, suffix 1–2 | 7 | 25 s | stubbed lexer |
+| `ref_lexer_matches_logos` | 1 byte, real logos | 3 | 5 s | exhaustive test: all ≤ 2 bytes, all ≤ 4 over `ALPHABET`; Bolero |
+| `hex4_matches_from_str_radix` | 4 bytes | 6 | 4 s | |
+| `surrogate_pair_is_always_scalar` | all high × low pairs (arithmetic) | none | 0.1 s | `every_surrogate_pair_decodes` runs `decode_str` on every pair |
+| `decode_never_panics` | exactly 4 bytes | 6 | 121 s | `exhaustive_short_decode_inputs`: every byte string ≤ 3 |
+| `borrowed_iff_no_escape` | exactly 4 bytes | 6 | 123 s | same |
+| `lexer_and_decoder_agree` | exactly 4 bytes, quoted | 6 | 152 s | same, real logos |
+| `chunking_is_invisible`, `offsets_are_monotone`, `max_token_len_is_enforced`, `chunked_parse_is_invisible` | not under Kani | | > 10 min at 2 bytes | `exhaustive_short_stream_inputs` / `exhaustive_short_parse_inputs`: every byte string ≤ 2 bytes and every string ≤ 4 bytes over `ALPHABET`, every split, real logos; Bolero with chunk-size lists |
+
+What the measurements showed:
+
+- **Symbolic lengths are the main cost.** With `len` nondeterministic, every loop over the input (logos's states, UTF-8 validation, `decode_str`, `hex4`) is unrolled to the unwind bound on every path. Harnesses therefore run Kani on a concrete length (`for_each_prefix` for the cheap ones, exactly `N` bytes via `for_each_input` for `decode_str`) and enumerate the shorter inputs in ordinary `exhaustive_*` tests. Tight unwind bounds matter too: `complete_number_is_prefix` went from 142 s to 38 s going from unwind 10 to 6. Unwinding assertions stay on, so a bound that is too small fails rather than passing silently.
+- **`decode_str` is expensive per byte.** A single 4-byte input takes about 2 minutes, almost all in CBMC's simplifier on the `String`/`Cow` heap objects. The plan's 10 bytes is out of reach; 4 bytes reaches a two-character escape and a two-byte UTF-8 character but not `\uXXXX`, which `every_surrogate_pair_decodes` covers by enumeration.
+- **`StreamLexer` and `Parser` are out of reach entirely.** Even two symbolic bytes, with the lexer stubbed and `format` stubbed, did not finish in 10 minutes (three bytes: not in 20). K2's "green at bound 6" is not achievable with Kani, so K2's two properties are proved by enumeration instead, which also runs the real logos. This matters for K3 (see "Open questions").
+- **std's `from_utf8` is slow under Kani** (it reads aligned words found with `align_offset`), so harnesses use `verify::as_utf8`, a byte-at-a-time check that `utf8_check_matches_std` tests against std on every input up to 3 bytes and every 4-byte input built from the table's range edges.
 
 ### Stubs
 
-- **Float parsing.** `text.parse::<f64>()` (`src/parser.rs:169`) pulls in `core`'s dec2flt, which is far too large for Kani. Extract the number branch of `parse_tokens` (`src/parser.rs:156`–`184`) into a private `fn number_value(kind: Token, text: &str) -> Result<Number, ParseError>`, and in state-machine harnesses replace it with `#[kani::stub(number_value, nondet_number_value)]` returning an arbitrary `Int`/`Double`. `number_value` itself is checked by Bolero against `serde_json` only. This is the only production-code refactor this plan needs.
-- **Error messages.** `ParseError::malformed` is called with `format!` strings. If formatting dominates solver time (measure first), stub `alloc::fmt::format` to return an empty `String` in parser harnesses. Harnesses assert on error *kind and offset*, never on message text, so the stub can't hide a bug they check for.
-- **logos-generated code is not stubbed.** It is small per token, and any `unsafe` indexing it emits gets checked by Kani for free.
+- **logos is stubbed after all.** The plan assumed logos-generated code is small per token. It is not, for CBMC: logos 0.16's default codegen is a set of mutually tail-calling state functions, which CBMC unrolls as recursion on every path, and `complete_number_is_prefix` did not finish on 2 bytes. The `state_machine_codegen` feature (one loop over a `match`; enabled only under `cargo kani`, see "Dependencies") makes 1 byte take 2 s, but 2 bytes still needs over 4 minutes, because paths that consumed different numbers of bytes merge and the offset becomes symbolic. So Kani harnesses that lex use `#[kani::stub(<Token as Logos>::lex, ref_lexer::ref_lex)]`: `src/verify/ref_lexer.rs` is a direct longest-match scanner for the grammar in `src/lexer/token.rs` (about 100 lines), written against logos's `internal::LexerInternal` API. Those proofs are therefore about the reference lexer, and the link to logos is checked separately on everything `StreamLexer` reads from it (first token kind and span, first error's start, whitespace-only): by Kani on one byte, by an exhaustive test over every input up to 2 bytes and every input up to 4 bytes over `verify::ALPHABET` (one byte per class the grammar distinguishes), and by Bolero. The stub needs an early-bound lifetime (`where 's: 's`) to match `Logos<'s>::lex`'s generic parameter count.
+- **Float parsing.** As planned: the number branch of `parse_tokens` is now `parser::number_value(kind, text, offset)` (it needs `offset` for its error), and `verify::parser::stub_number_value` replaces it. The stub is deterministic in the token text rather than nondeterministic, so that harnesses comparing two parses (chunked vs. whole) see the same value for the same token. Unused until K3.
+- **Error messages.** `verify::stub_format` replaces `std::fmt::format` with an empty `String`. It did not rescue the stream harnesses and is unused until K3.
 
 ## Harnesses
 
-Engine: **K** = Kani proof, **B** = Bolero (test + fuzz), **K+B** = shared body. "Today" is what I expect from reading the code, not from a run.
+Engine: **K** = Kani proof, **B** = Bolero (test + fuzz), **K+B** = shared body, **exhaustive** = an ordinary test that enumerates every short input (see "Bounds" for which rows ended up there and why). "Today" is what I expect from reading the code, not from a run.
 
 ### Core crate: lexer (`src/lexer/`)
 
@@ -133,16 +153,16 @@ Engine: **K** = Kani proof, **B** = Bolero (test + fuzz), **K+B** = shared body.
 | `string_may_extend_is_sound` | K | For any body ≤ 4 bytes and suffix ≤ 4 bytes: if `"` + body + suffix lexes as one `String` token, then `string_may_extend(body)` (`src/lexer/mod.rs:201`). A false here means the stream lexer reports an error at a chunk boundary for valid input. | pass |
 | `string_may_extend_never_panics` | K | Covers the `\u` slicing at `src/lexer/mod.rs:214` for every truncation. | pass |
 | `keyword_may_extend` | K | `may_extend` on `t`/`f`/`n` prefixes agrees with "is a proper prefix of the keyword". | pass |
-| `chunking_is_invisible` | K+B | For any input ≤ 6 bytes and split `k`, `StreamLexer` over a two-chunk reader yields the same `(Token, bytes, offset)` sequence and the same error offset as over one chunk. Fuzz version uses arbitrary chunk-size lists and long inputs. This is the exhaustive form of `test_every_chunk_size_matches_unchunked`. | pass |
-| `max_token_len_is_enforced` | K | With nondeterministic `max_token_len ≤ 8`, no `Lexed::Token` longer than the cap is ever returned, chunked or not. | pass |
-| `offsets_are_monotone` | K+B | Token offsets strictly increase and each points at the token's first byte in the input. | pass |
+| `chunking_is_invisible` | B + exhaustive | For any input ≤ 6 bytes and split `k`, `StreamLexer` over a two-chunk reader yields the same `(Token, bytes, offset)` sequence and the same error offset as over one chunk. Fuzz version uses arbitrary chunk-size lists and long inputs. This is the exhaustive form of `test_every_chunk_size_matches_unchunked`. | pass |
+| `max_token_len_is_enforced` | B + exhaustive | With nondeterministic `max_token_len ≤ 8`, no `Lexed::Token` longer than the cap is ever returned, chunked or not. | pass |
+| `offsets_are_monotone` | B + exhaustive | Token offsets strictly increase and each points at the token's first byte in the input. | pass |
 
 ### Core crate: `decode_str` (`src/decode.rs`)
 
 | Name | Engine | Property | Today |
 |---|---|---|---|
 | `hex4_matches_from_str_radix` | K | For all 4-byte inputs, `hex4` equals `u16::from_str_radix` when all bytes are hex digits and `None` otherwise (`src/decode.rs:167`). | pass |
-| `decode_never_panics` | K+B | Any `&str` ≤ 10 bytes (built from bytes with `kani::assume(from_utf8(..).is_ok())`). Covers the `&body[run..i]` slices. | pass |
+| `decode_never_panics` | K+B | Any `&str` ≤ 4 bytes (see "Bounds") (built from bytes with `kani::assume(from_utf8(..).is_ok())`). Covers the `&body[run..i]` slices. | pass |
 | `surrogate_pair_is_always_scalar` | K | For every high/low pair, the `ok_or(LoneSurrogate)` at `src/decode.rs:141` is unreachable (`kani::cover!` on that branch must be unsatisfiable), so that error path is dead code. | pass |
 | `lexer_and_decoder_agree` | K+B | If bytes lex as one `String` token and are valid UTF-8, `decode_str` returns `Ok` or `LoneSurrogate`, never `NotQuoted`, `UnescapedCharacter` or `InvalidEscape`. | pass |
 | `decode_matches_serde_json` | B | Fuzz-only: `decode_str(raw) == serde_json::from_str::<String>(raw)` modulo lone surrogates. Extends the existing proptest to coverage-guided input. | pass |
@@ -164,7 +184,7 @@ All use `Recorder`, which asserts on every callback:
 | `accepts_only_valid_json` | K+B | If `parse` and `finish_parse` both return `Ok`, the reference recognizer accepts the same token sequence. | **fails**, by design. Counterexamples expected for the `N_ALLOWLIST` classes: `[1,]`, `{"a"::1}` (`:` outside `MapSep` ignored, `src/parser.rs:240`), `[][]` (`[`/`{` don't check status, `:134`), `[}]` (status overwritten after `LexicalError`, `:121`). |
 | `accepts_all_valid_json` | K+B | The converse: every token sequence the reference accepts is accepted by the parser. Under Kani this is bounded by the input length; under Bolero inputs come from a JSON generator serialized with random whitespace. | pass, I expect |
 | `events_match_reference` | K+B | For accepted input, the event sequence equals the one the reference recognizer emits. | pass on valid input |
-| `chunked_parse_is_invisible` | K+B | Same as `chunking_is_invisible`, at the event level through `Parser`. Exhaustive form of `tests/test_split_points.rs`. | pass |
+| `chunked_parse_is_invisible` | B + exhaustive | Same as `chunking_is_invisible`, at the event level through `Parser`. Exhaustive form of `tests/test_split_points.rs`. | pass |
 | `split_across_parse_calls` | K+B | For any input ≤ 6 bytes and split `k`, `parse(&input[..k])`, `parse(&input[k..])`, `finish_parse()` gives the same events and result as one `parse` of the whole input followed by `finish_parse()`. | **fails**: `[1` then `2]` gives two numbers (see "Tokens span `parse` calls"). |
 
 The reference recognizer (`src/verify/reference.rs`) is an explicit-stack pushdown automaton over `Token`s, written directly from the RFC 8259 grammar, about 60 lines, no recursion (so Kani needs no extra unwinding for depth). Before it is trusted as an oracle it is run over JSONTestSuite: it must accept every `y_*` and reject every `n_*` whose tokens lex, with **no allowlist**.
@@ -204,7 +224,7 @@ The fix (K3c) keeps the lexer's buffer in `Parser` between calls instead of in a
 
 - Seed every Bolero target that takes bytes from `tests/valid_json_fixtures/`, `tests/json_test_suite/test_parsing/` and `yajlish-ndjson`'s fixtures, copied into `__fuzz__/<target>/corpus/` by `scripts/seed-corpora.sh`.
 - New CI jobs in `.github/workflows/ci.yaml`:
-  - `kani` (every PR): `model-checking/kani-github-action@v1`, running `cargo kani --tests --workspace`. Harnesses marked `should_panic` keep it green until K3b.
+  - `kani` (every PR): `model-checking/kani-github-action@v1`, running `cargo kani --tests -p yajlish@0.5.0 -Z stubbing` (more `-p` as K4/K5 add crates; about 9 minutes after K2). Harnesses marked `should_panic` keep it green until K3b.
   - `fuzz` (nightly schedule, not PRs): nightly toolchain, `cargo install cargo-bolero`, 5 minutes per target with libFuzzer, uploading any crash as an artifact.
 - The existing `cargo test --all` job runs every Bolero harness with random inputs at no extra setup cost.
 
@@ -214,7 +234,7 @@ The fix (K3c) keeps the lexer's buffer in `Parser` between calls instead of in a
 |---|---|---|
 | K0 | Tooling: `bolero` dev-dep, `[lints.rust]` check-cfg, `verify` modules, `Recorder`, `number_value` extraction, Kani CI job | `cargo kani` runs one trivial proof in CI; `cargo test` unchanged; solver times recorded here |
 | K1 | Lexer and `decode_str` proofs | All lexer/decoder rows green under Kani and as tests |
-| K2 | Chunk independence (lexer and parser levels) | `chunking_is_invisible`, `chunked_parse_is_invisible` green at bound 6 |
+| K2 | Chunk independence (lexer and parser levels) | `chunking_is_invisible`, `chunked_parse_is_invisible` green at bound 6. **Done differently:** Kani cannot run `StreamLexer`; both are exhaustive up to 2 bytes (all bytes) and 4 bytes (`ALPHABET`), plus Bolero |
 | K3 | Parser state machine, reference recognizer, `accepts_only_valid_json` as `should_panic` | Reference passes JSONTestSuite with no allowlist; counterexamples committed as unit tests |
 | K3b | Parser hardening (separate PR, behaviour change) | `accepts_only_valid_json` passes without `should_panic`; `N_ALLOWLIST` is empty |
 | K3c | Tokens span `parse` calls: lexer buffer moves into `Parser`, `finish_parse` flushes (separate PR, behaviour change) | `split_across_parse_calls` passes; `Parser` docs and changelog updated |
@@ -226,4 +246,5 @@ K0–K2 can be one PR. K3, K3b, K3c, K4 and K5 are separate PRs.
 
 ## Open questions
 
-1. **Kani bound for the parser.** 8 bytes reaches `{"a":1}` and `[[[]]]` but not a surrogate pair inside a document. If K0's timings allow 12, that is worth the extra CI minutes.
+1. **Kani bound for the parser.** 8 bytes reaches `{"a":1}` and `[[[]]]` but not a surrogate pair inside a document. If K0's timings allow 12, that is worth the extra CI minutes. *Answered by K0–K2's measurements: no symbolic parser input fits at all, see 2.*
+2. **K3 cannot run `Parser::parse` under Kani** (found in K2: `StreamLexer` does not finish even on two symbolic bytes). The state-machine proofs need to bypass it: for example, factor the body of `parse_tokens` so a harness can feed it a nondeterministic `Token` sequence directly, with `number_value` stubbed. That is a production refactor beyond `number_value`, so it needs a decision before K3 starts. The alternative is to make the K3 rows exhaustive tests plus Bolero, like K2.
