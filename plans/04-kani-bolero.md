@@ -115,7 +115,7 @@ These are starting points. I could not run `cargo kani` while writing this plan,
 
 ### Stubs
 
-- **Float parsing.** `text.parse::<f64>()` (`src/parser.rs:169`) pulls in `core`'s dec2flt, which is far too large for Kani. Extract the number branch of `parse_tokens` (`src/parser.rs:157`–`185`) into a private `fn number_value(kind: Token, text: &str) -> Result<Number, ParseError>`, and in state-machine harnesses replace it with `#[kani::stub(number_value, nondet_number_value)]` returning an arbitrary `Int`/`Double`. `number_value` itself is checked by Bolero against `serde_json` only. This is the only production-code refactor this plan needs.
+- **Float parsing.** `text.parse::<f64>()` (`src/parser.rs:169`) pulls in `core`'s dec2flt, which is far too large for Kani. Extract the number branch of `parse_tokens` (`src/parser.rs:156`–`184`) into a private `fn number_value(kind: Token, text: &str) -> Result<Number, ParseError>`, and in state-machine harnesses replace it with `#[kani::stub(number_value, nondet_number_value)]` returning an arbitrary `Int`/`Double`. `number_value` itself is checked by Bolero against `serde_json` only. This is the only production-code refactor this plan needs.
 - **Error messages.** `ParseError::malformed` is called with `format!` strings. If formatting dominates solver time (measure first), stub `alloc::fmt::format` to return an empty `String` in parser harnesses. Harnesses assert on error *kind and offset*, never on message text, so the stub can't hide a bug they check for.
 - **logos-generated code is not stubbed.** It is small per token, and any `unsafe` indexing it emits gets checked by Kani for free.
 
@@ -165,10 +165,17 @@ All use `Recorder`, which asserts on every callback:
 | `accepts_all_valid_json` | K+B | The converse: every token sequence the reference accepts is accepted by the parser. Under Kani this is bounded by the input length; under Bolero inputs come from a JSON generator serialized with random whitespace. | pass, I expect |
 | `events_match_reference` | K+B | For accepted input, the event sequence equals the one the reference recognizer emits. | pass on valid input |
 | `chunked_parse_is_invisible` | K+B | Same as `chunking_is_invisible`, at the event level through `Parser`. Exhaustive form of `tests/test_split_points.rs`. | pass |
+| `split_across_parse_calls` | K+B | For any input ≤ 6 bytes and split `k`, `parse(&input[..k])`, `parse(&input[k..])`, `finish_parse()` gives the same events and result as one `parse` of the whole input followed by `finish_parse()`. | **fails**: `[1` then `2]` gives two numbers (see "Tokens span `parse` calls"). |
 
 The reference recognizer (`src/verify/reference.rs`) is an explicit-stack pushdown automaton over `Token`s, written directly from the RFC 8259 grammar, about 60 lines, no recursion (so Kani needs no extra unwinding for depth). Before it is trusted as an oracle it is run over JSONTestSuite: it must accept every `y_*` and reject every `n_*` whose tokens lex, with **no allowlist**.
 
 `accepts_only_valid_json` is the plan's main payoff. It lands in K3 marked `#[cfg_attr(kani, kani::should_panic)]`, with each counterexample committed as a failing-then-ignored unit test. Fixing the parser so it passes is the parser-hardening task from Plan 1 and is a behaviour change, so it is a separate PR (K3b), which also empties `N_ALLOWLIST`. **Default picked, flag if you'd rather fold the fix into this plan.**
+
+#### Tokens span `parse` calls (decided 2026-10-17)
+
+A token cut off at the end of one `parse` call continues in the next: `parse(b"[1")` then `parse(b"2]")` must deliver one `handle_int(12)`. Today each `parse` builds a new `StreamLexer` (`src/parser.rs:62`), which treats the end of its reader as the end of the stream, so it emits `1` and then `2`.
+
+The fix (K3c) keeps the lexer's buffer in `Parser` between calls instead of in a per-call `StreamLexer`. The end of one reader then means "no more bytes for now", and a token that may still extend stays buffered. Only `finish_parse` marks the true end of the stream and flushes it. One consequence callers will see: a document that is a bare top-level number (`12`) only produces its event from `finish_parse`, because until then a later call could append digits. Strings, keywords and containers are unaffected since they end in a byte that can't extend. That changes the documented contract of `parse` and `finish_parse`, so the changelog and the `Parser` docs say so.
 
 ### `yajlish-ndjson`
 
@@ -195,7 +202,7 @@ The reference recognizer (`src/verify/reference.rs`) is an explicit-stack pushdo
 
 ## Fuzz corpora and CI
 
-- Seed every Bolero target that takes bytes from `tests/valid_json_fixtures/`, `tests/json_test_suite/test_parsing/` and `yajlish-ndjson`'s fixtures, copied into `__fuzz__/<target>/corpus/` by a small `cargo xtask`-free script in `scripts/seed-corpora.sh`.
+- Seed every Bolero target that takes bytes from `tests/valid_json_fixtures/`, `tests/json_test_suite/test_parsing/` and `yajlish-ndjson`'s fixtures, copied into `__fuzz__/<target>/corpus/` by `scripts/seed-corpora.sh`.
 - New CI jobs in `.github/workflows/ci.yaml`:
   - `kani` (every PR): `model-checking/kani-github-action@v1`, running `cargo kani --tests --workspace`. Harnesses marked `should_panic` keep it green until K3b.
   - `fuzz` (nightly schedule, not PRs): nightly toolchain, `cargo install cargo-bolero`, 5 minutes per target with libFuzzer, uploading any crash as an artifact.
@@ -210,13 +217,13 @@ The reference recognizer (`src/verify/reference.rs`) is an explicit-stack pushdo
 | K2 | Chunk independence (lexer and parser levels) | `chunking_is_invisible`, `chunked_parse_is_invisible` green at bound 6 |
 | K3 | Parser state machine, reference recognizer, `accepts_only_valid_json` as `should_panic` | Reference passes JSONTestSuite with no allowlist; counterexamples committed as unit tests |
 | K3b | Parser hardening (separate PR, behaviour change) | `accepts_only_valid_json` passes without `should_panic`; `N_ALLOWLIST` is empty |
+| K3c | Tokens span `parse` calls: lexer buffer moves into `Parser`, `finish_parse` flushes (separate PR, behaviour change) | `split_across_parse_calls` passes; `Parser` docs and changelog updated |
 | K4 | ndjson and selector harnesses | Rows green |
 | K5 | Schema `num`/`value` proofs, runtime harness, macro name fuzzing | Rows green |
 | K6 | Corpora seeded, nightly fuzz job | One clean nightly run per target |
 
-K0–K2 can be one PR. K3, K3b, K4 and K5 are separate PRs.
+K0–K2 can be one PR. K3, K3b, K3c, K4 and K5 are separate PRs.
 
 ## Open questions
 
-1. **Splitting a token across `parse` calls.** Each `Parser::parse` builds a new `StreamLexer` that sees EOF at the end of its reader (`src/parser.rs:61`), so `parse(b"[1")` then `parse(b"2]")` lexes `1` and `2` as two numbers, not `12`. Offsets are documented as absolute across calls, which suggests multi-call parsing is supported. Is that split the intended behaviour? If yes, a harness pins it; if not, it is a bug for K3b.
-2. **Kani bound for the parser.** 8 bytes reaches `{"a":1}` and `[[[]]]` but not a surrogate pair inside a document. If K0's timings allow 12, that is worth the extra CI minutes.
+1. **Kani bound for the parser.** 8 bytes reaches `{"a":1}` and `[[[]]]` but not a surrogate pair inside a document. If K0's timings allow 12, that is worth the extra CI minutes.
