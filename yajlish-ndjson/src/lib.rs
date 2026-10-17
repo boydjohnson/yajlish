@@ -518,11 +518,9 @@ pub enum Selector {
     Index(usize),
 }
 
-use lalrpop_util::lalrpop_mod;
+pub mod selector_parser;
 
-lalrpop_mod!(#[allow(clippy::all, clippy::pedantic)] pub selector_parser);
-
-pub use self::selector_parser::SelectorParser;
+pub use self::selector_parser::{SelectorParseError, SelectorParser};
 
 #[cfg(test)]
 mod tests {
