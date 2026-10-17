@@ -1,6 +1,6 @@
 mod common;
 
-use common::test_ndjson_fixture;
+use common::{test_ndjson_fixture, test_ndjson_fixture_split};
 use yajlish_ndjson::Selector;
 
 const PATH: &str = "ndjson_fixtures";
@@ -17,6 +17,20 @@ fn test_custom_geojson() {
 #[test]
 fn test_custom_json() {
     test_ndjson_fixture(
+        PATH,
+        "prize.json",
+        vec![Selector::Identifier("\"prizes\"".to_owned())],
+    );
+}
+
+#[test]
+fn test_fixtures_split_invariant() {
+    test_ndjson_fixture_split(
+        PATH,
+        "custom.geo.json",
+        vec![Selector::Identifier("\"features\"".to_owned())],
+    );
+    test_ndjson_fixture_split(
         PATH,
         "prize.json",
         vec![Selector::Identifier("\"prizes\"".to_owned())],

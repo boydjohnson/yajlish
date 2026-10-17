@@ -163,6 +163,11 @@ pub trait Handler {
     fn handle_bool(&mut self, ctx: &Context, val: bool) -> Status;
 
     /// Latest parsed value was a string.
+    ///
+    /// `val` is the raw JSON text of the string: the surrounding quotes and
+    /// any escape sequences are kept exactly as they appeared in the input.
+    /// Use `decode_str` to get the string value. Other crates, such as
+    /// `yajlish-ndjson`, rely on the raw form to re-emit strings verbatim.
     fn handle_string(&mut self, ctx: &Context, val: &str) -> Status;
 
     /// Latest parsed value was a left curly brace ({).
@@ -172,6 +177,10 @@ pub trait Handler {
     fn handle_end_map(&mut self, ctx: &Context) -> Status;
 
     /// Latest parsed value was a key to a JSON object.
+    ///
+    /// Like `handle_string`, `key` is raw JSON text with its quotes and
+    /// escapes intact, so `{"foo": 1}` delivers `"\"foo\""`. Two keys that are
+    /// equal after decoding can differ as raw text.
     fn handle_map_key(&mut self, ctx: &Context, key: &str) -> Status;
 
     /// Latest parsed value was a left bracket ([).

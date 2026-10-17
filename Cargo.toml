@@ -26,7 +26,7 @@ edition.workspace = true
 all-features = true
 
 [dependencies]
-json-tools = "^1.1"
+logos = "0.16"
 
 [dev-dependencies]
 pretty_assertions.workspace = true

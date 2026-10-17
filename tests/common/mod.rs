@@ -1,5 +1,6 @@
 use yajlish::Parser;
 
+pub mod chunked;
 pub mod mock_handler;
 
 use mock_handler::MockHandler;

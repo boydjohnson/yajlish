@@ -72,7 +72,8 @@
 //! ```
 
 mod common;
+mod lexer;
 mod parser;
 
 pub use common::{Context, Enclosing, Handler, ParserStatus, Status};
-pub use parser::Parser;
+pub use parser::{ParseError, Parser};
