@@ -111,11 +111,10 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
             let rest = &input[start..];
             if !self.eof && may_extend(rest) {
                 if rest.len() > self.max_token_len {
-                    return Err(ParseError::MalformedJson(format!(
-                        "token longer than {} bytes at offset {}",
-                        self.max_token_len,
-                        self.offset() + start as u64
-                    )));
+                    return Err(ParseError::malformed(
+                        self.offset() + start as u64,
+                        format!("token longer than {} bytes", self.max_token_len),
+                    ));
                 }
                 // Drop the whitespace before the token too, so that the
                 // buffer holds at most the token in flight plus one read.
@@ -126,12 +125,10 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
 
             let offset = self.offset() + start as u64;
             return match first {
-                Some(Ok(_)) if span.len() > self.max_token_len => {
-                    Err(ParseError::MalformedJson(format!(
-                        "token longer than {} bytes at offset {}",
-                        self.max_token_len, offset
-                    )))
-                }
+                Some(Ok(_)) if span.len() > self.max_token_len => Err(ParseError::malformed(
+                    offset,
+                    format!("token longer than {} bytes", self.max_token_len),
+                )),
                 Some(Ok(kind)) => {
                     let begin = self.pos + span.start;
                     let end = self.pos + span.end;
@@ -142,11 +139,13 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
                         offset,
                     })
                 }
-                _ => Err(ParseError::MalformedJson(format!(
-                    "invalid token {:?} at offset {}",
-                    String::from_utf8_lossy(&rest[..rest.len().min(span.end - start).max(1)]),
-                    offset
-                ))),
+                _ => Err(ParseError::malformed(
+                    offset,
+                    format!(
+                        "invalid token {:?}",
+                        String::from_utf8_lossy(&rest[..rest.len().min(span.end - start).max(1)])
+                    ),
+                )),
             };
         }
     }
@@ -173,11 +172,10 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    return Err(ParseError::ReadError(format!(
-                        "{} at offset {}",
-                        e,
-                        self.base + self.buf.len() as u64
-                    )))
+                    return Err(ParseError::ReadError {
+                        offset: self.base + self.buf.len() as u64,
+                        msg: e.to_string(),
+                    })
                 }
             }
         }
@@ -362,7 +360,10 @@ mod tests {
     fn test_max_token_len() {
         let mut data: &[u8] = b"\"aaaaaaaaaaaaaaaaaaaa\"";
         let mut lexer = StreamLexer::new(&mut data, 8, 0);
-        assert!(matches!(lexer.next(), Err(ParseError::MalformedJson(_))));
+        assert!(matches!(
+            lexer.next(),
+            Err(ParseError::MalformedJson { .. })
+        ));
         let mut data: &[u8] = b"\"aaaaaa\"";
         let mut lexer = StreamLexer::new(&mut data, 8, 0);
         assert!(lexer.next().is_ok());
@@ -372,7 +373,10 @@ mod tests {
             chunk: 1,
         };
         let mut lexer = StreamLexer::new(&mut reader, 8, 0);
-        assert!(matches!(lexer.next(), Err(ParseError::MalformedJson(_))));
+        assert!(matches!(
+            lexer.next(),
+            Err(ParseError::MalformedJson { .. })
+        ));
     }
 
     #[test]

@@ -70,6 +70,7 @@ impl<'a, H: Handler> Parser<'a, H> {
         lexer: &mut StreamLexer<'_, B>,
     ) -> Result<(), ParseError> {
         let context = &mut self.context;
+        let mut last_offset = lexer.offset();
 
         while !matches!(
             context.parser_status(),
@@ -80,7 +81,10 @@ impl<'a, H: Handler> Parser<'a, H> {
                     kind,
                     bytes,
                     offset,
-                } => (kind, bytes, offset),
+                } => {
+                    last_offset = offset;
+                    (kind, bytes, offset)
+                }
                 Lexed::Eof => {
                     context.update_status(ParserStatus::ParseComplete);
                     break;
@@ -94,7 +98,7 @@ impl<'a, H: Handler> Parser<'a, H> {
                         context.remove_last_enclosing();
                         context.dec_brackets();
                     } else {
-                        return Err(ParseError::MalformedJson(format!("Parsed right bracket without a corresponding left bracket: braces: {}, brackets: {}", context.num_open_braces(), context.num_open_brackets())));
+                        return Err(ParseError::malformed(offset, format!("Parsed right bracket without a corresponding left bracket: braces: {}, brackets: {}", context.num_open_braces(), context.num_open_brackets())));
                     }
 
                     if context.last_enclosing() == Some(Enclosing::LeftBrace) {
@@ -149,8 +153,9 @@ impl<'a, H: Handler> Parser<'a, H> {
                     Some(status)
                 }
                 Token::Int | Token::Number => {
-                    let text = std::str::from_utf8(bytes).map_err(|e| {
-                        ParseError::Utf8Error(format!("{} at offset {}", e, offset))
+                    let text = std::str::from_utf8(bytes).map_err(|e| ParseError::Utf8Error {
+                        offset: offset + e.valid_up_to() as u64,
+                        msg: e.to_string(),
                     })?;
                     let int = if kind == Token::Int {
                         text.parse::<i64>().ok()
@@ -163,10 +168,10 @@ impl<'a, H: Handler> Parser<'a, H> {
                         None => match text.parse::<f64>() {
                             Ok(num) => self.handler.handle_double(context, num),
                             Err(e) => {
-                                return Err(ParseError::MalformedJson(format!(
-                                    "invalid number {:?} at offset {}: {}",
-                                    text, offset, e
-                                )))
+                                return Err(ParseError::malformed(
+                                    offset,
+                                    format!("invalid number {:?}: {}", text, e),
+                                ))
                             }
                         },
                     };
@@ -176,12 +181,9 @@ impl<'a, H: Handler> Parser<'a, H> {
                     Some(status)
                 }
                 Token::String => {
-                    let string = std::str::from_utf8(bytes).map_err(|e| {
-                        ParseError::Utf8Error(format!(
-                            "{} at offset {}",
-                            e,
-                            offset + e.valid_up_to() as u64
-                        ))
+                    let string = std::str::from_utf8(bytes).map_err(|e| ParseError::Utf8Error {
+                        offset: offset + e.valid_up_to() as u64,
+                        msg: e.to_string(),
                     })?;
 
                     if context.parser_status() == ParserStatus::ArrayNeedVal
@@ -248,11 +250,14 @@ impl<'a, H: Handler> Parser<'a, H> {
             }
         }
         if self.context.parser_status() == ParserStatus::LexicalError {
-            return Err(ParseError::MalformedJson(format!(
-                "Parse failed due to malformed json: open braces: {}, open brackets: {}",
-                self.context.num_open_braces(),
-                self.context.num_open_brackets()
-            )));
+            return Err(ParseError::malformed(
+                last_offset,
+                format!(
+                    "Parse failed due to malformed json: open braces: {}, open brackets: {}",
+                    self.context.num_open_braces(),
+                    self.context.num_open_brackets()
+                ),
+            ));
         }
 
         Ok(())
@@ -265,76 +270,106 @@ impl<'a, H: Handler> Parser<'a, H> {
     ///    - Returns an error Result if the JSON was malformed.
     pub fn finish_parse(self) -> Result<(), ParseError> {
         if self.context.parser_status() != ParserStatus::ParseComplete {
-            return Err(ParseError::MalformedJson(
-                "Did not reach a ParseComplete status".to_owned(),
+            return Err(ParseError::malformed(
+                self.offset,
+                "Did not reach a ParseComplete status",
             ));
         }
-        if self.context.num_open_braces() != 0 {
-            return Err(ParseError::MalformedJson(format!(
-                "Number of open braces: {}, number of open brackets: {}",
-                self.context.num_open_braces(),
-                self.context.num_open_brackets()
-            )));
-        }
-        if self.context.num_open_brackets() != 0 {
-            return Err(ParseError::MalformedJson(format!(
-                "Number of open braces: {}, number of open brackets: {}",
-                self.context.num_open_braces(),
-                self.context.num_open_brackets()
-            )));
+        if self.context.num_open_braces() != 0 || self.context.num_open_brackets() != 0 {
+            return Err(ParseError::malformed(
+                self.offset,
+                format!(
+                    "Number of open braces: {}, number of open brackets: {}",
+                    self.context.num_open_braces(),
+                    self.context.num_open_brackets()
+                ),
+            ));
         }
 
         Ok(())
     }
 }
 
-/// `ParseError`
-#[derive(PartialEq, Eq)]
+/// Why a parse failed, with the absolute byte offset into the stream where
+/// the problem was found.
+///
+/// Offsets count every byte read by every `parse` call on the same
+/// `Parser`. For errors found by `finish_parse`, the offset is the end of
+/// the input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParseError {
-    /// Bytes can't be decoded as UTF-8 to a string.
-    Utf8Error(String),
-    /// The json is malformed in some way, missing closing brace, bracket, or
-    /// a value can't be parsed due to being malformed.
-    MalformedJson(String),
-    /// Error of the underlying Reader.
-    ReadError(String),
+    /// A string's bytes are not valid UTF-8.
+    Utf8Error {
+        /// Offset of the first invalid byte.
+        offset: u64,
+        /// Description of the problem.
+        msg: String,
+    },
+    /// The json is malformed in some way: a byte sequence that is not a JSON
+    /// token, a token in the wrong place, or missing closing braces or
+    /// brackets.
+    MalformedJson {
+        /// Offset of the offending token.
+        offset: u64,
+        /// Description of the problem.
+        msg: String,
+    },
+    /// The underlying reader returned an error.
+    ReadError {
+        /// Offset of the first byte that could not be read.
+        offset: u64,
+        /// The reader's error message.
+        msg: String,
+    },
 }
 
-impl std::error::Error for ParseError {
-    fn description(&self) -> &str {
-        match self {
-            ParseError::Utf8Error(ref msg)
-            | ParseError::MalformedJson(ref msg)
-            | ParseError::ReadError(ref msg) => msg,
+impl ParseError {
+    pub(crate) fn malformed(offset: u64, msg: impl Into<String>) -> Self {
+        ParseError::MalformedJson {
+            offset,
+            msg: msg.into(),
         }
     }
 
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        None
+    /// The byte offset in the stream where the error was found.
+    #[must_use]
+    pub fn offset(&self) -> u64 {
+        match self {
+            ParseError::Utf8Error { offset, .. }
+            | ParseError::MalformedJson { offset, .. }
+            | ParseError::ReadError { offset, .. } => *offset,
+        }
+    }
+
+    /// The description of the error, without the offset.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            ParseError::Utf8Error { msg, .. }
+            | ParseError::MalformedJson { msg, .. }
+            | ParseError::ReadError { msg, .. } => msg,
+        }
     }
 }
+
+impl std::error::Error for ParseError {}
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::Utf8Error(ref msg) => {
-                write!(f, "Error converting bytes to UTF-8 encoded string: {}", msg)
+            ParseError::Utf8Error { offset, msg } => write!(
+                f,
+                "Error converting bytes to UTF-8 encoded string at byte {}: {}",
+                offset, msg
+            ),
+            ParseError::MalformedJson { offset, msg } => {
+                write!(f, "Error: Malformed Json at byte {}: {}", offset, msg)
             }
-            ParseError::MalformedJson(ref msg) => write!(f, "Error: Malformed Json: {}", msg),
-            ParseError::ReadError(ref msg) => write!(f, "Error: Read Error: {}", msg),
+            ParseError::ReadError { offset, msg } => {
+                write!(f, "Error: Read Error at byte {}: {}", offset, msg)
+            }
         }
-    }
-}
-
-impl std::fmt::Debug for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
-    }
-}
-
-impl From<std::io::Error> for ParseError {
-    fn from(other: std::io::Error) -> Self {
-        ParseError::ReadError(other.to_string())
     }
 }
 
