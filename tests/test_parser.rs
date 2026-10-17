@@ -283,7 +283,7 @@ impl std::io::Read for FailAfter<'_> {
 impl std::io::BufRead for FailAfter<'_> {
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
         if self.good == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "boom"));
+            return Err(std::io::Error::other("boom"));
         }
         Ok(&self.data[..self.good.min(self.data.len()).min(3)])
     }
