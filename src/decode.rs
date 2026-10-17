@@ -164,7 +164,7 @@ pub fn decode_str(raw: &str) -> Result<Cow<'_, str>, DecodeError> {
 }
 
 /// Four hex digits at `b[at..at + 4]` as a UTF-16 code unit.
-fn hex4(b: &[u8], at: usize) -> Option<u16> {
+pub(crate) fn hex4(b: &[u8], at: usize) -> Option<u16> {
     let digits = b.get(at..at + 4)?;
     let mut v = 0u16;
     for &d in digits {

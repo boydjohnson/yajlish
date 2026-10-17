@@ -31,13 +31,26 @@ all-features = true
 [dependencies]
 logos = "0.16"
 
+# Under `cargo kani` only: logos's default codegen is a set of mutually
+# tail-calling state functions, which CBMC unrolls as recursion on every
+# path and cannot finish even for 2-byte inputs. The state-machine codegen
+# is one loop over a `match`, the same automaton.
+[target.'cfg(kani)'.dependencies]
+logos = { version = "0.16", features = ["state_machine_codegen"] }
+
 [dev-dependencies]
+bolero = "0.13.7"
 criterion = { version = "0.5", default-features = false }
 pretty_assertions.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
 # The previous release, built on json-tools, to compare against in benches/.
 yajlish_04 = { package = "yajlish", version = "0.4" }
+
+[lints.rust]
+# CI builds with RUSTFLAGS=-Dwarnings, and rustc's check-cfg warns on unknown
+# cfgs. `kani` is set by `cargo kani`, `fuzzing` by `cargo bolero`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }
 
 [[bench]]
 name = "parse"

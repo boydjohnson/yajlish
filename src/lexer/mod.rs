@@ -184,7 +184,7 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
 
 /// Whether some non-empty byte string can be appended to `b` so that the
 /// result is a prefix of a valid token. `b` starts at a token boundary.
-fn may_extend(b: &[u8]) -> bool {
+pub(crate) fn may_extend(b: &[u8]) -> bool {
     match b.first() {
         None => true,
         Some(b'"') => string_may_extend(&b[1..]),
@@ -198,7 +198,7 @@ fn may_extend(b: &[u8]) -> bool {
 
 /// `b` is the content after an opening quote. True when it is a valid,
 /// unterminated string body (so a closing quote can still follow).
-fn string_may_extend(b: &[u8]) -> bool {
+pub(crate) fn string_may_extend(b: &[u8]) -> bool {
     let mut i = 0;
     while i < b.len() {
         match b[i] {
@@ -230,7 +230,7 @@ fn string_may_extend(b: &[u8]) -> bool {
 /// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`. Every such prefix can be
 /// extended by at least one more byte, so for numbers this is exactly "may
 /// extend".
-fn is_number_prefix(b: &[u8]) -> bool {
+pub(crate) fn is_number_prefix(b: &[u8]) -> bool {
     #[derive(Clone, Copy)]
     enum S {
         Start,

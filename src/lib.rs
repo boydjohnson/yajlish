@@ -75,6 +75,8 @@ mod common;
 mod decode;
 mod lexer;
 mod parser;
+#[cfg(any(test, kani))]
+mod verify;
 
 pub use common::{Context, Enclosing, Handler, ParserStatus, Status};
 pub use decode::{decode_str, DecodeError};

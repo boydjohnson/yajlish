@@ -70,3 +70,18 @@ jobs:
 
     - name: Docs
       run: cargo doc --workspace --no-deps
+
+  kani:
+    name: Kani proofs
+    runs-on: ubuntu-latest
+    env:
+      # Kani passes its own flags to rustc and warns about them; it is
+      # checked with -Dwarnings by the jobs above.
+      RUSTFLAGS: ""
+    steps:
+    - uses: actions/checkout@master
+
+    - name: Kani
+      uses: model-checking/kani-github-action@v1
+      with:
+        args: --tests -p yajlish@0.5.0 -Z stubbing --output-format terse

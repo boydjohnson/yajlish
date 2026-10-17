@@ -158,23 +158,9 @@ impl<'a, H: Handler> Parser<'a, H> {
                         offset: offset + e.valid_up_to() as u64,
                         msg: e.to_string(),
                     })?;
-                    let int = if kind == Token::Int {
-                        text.parse::<i64>().ok()
-                    } else {
-                        None
-                    };
-                    let status = match int {
-                        Some(num) => self.handler.handle_int(context, num),
-                        // An `Int` that overflows i64 falls back to f64, as before.
-                        None => match text.parse::<f64>() {
-                            Ok(num) => self.handler.handle_double(context, num),
-                            Err(e) => {
-                                return Err(ParseError::malformed(
-                                    offset,
-                                    format!("invalid number {:?}: {}", text, e),
-                                ))
-                            }
-                        },
+                    let status = match number_value(kind, text, offset)? {
+                        Number::Int(num) => self.handler.handle_int(context, num),
+                        Number::Double(num) => self.handler.handle_double(context, num),
                     };
 
                     update_context_status_value(context);
@@ -371,6 +357,32 @@ impl std::fmt::Display for ParseError {
                 write!(f, "Error: Read Error at byte {}: {}", offset, msg)
             }
         }
+    }
+}
+
+/// The value of a number token.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Number {
+    Int(i64),
+    Double(f64),
+}
+
+/// The value of an `Int` or `Number` token whose text is `text`, found at
+/// `offset`. Kept out of `parse_tokens` so that Kani harnesses can stub it:
+/// float parsing is far too large to model check.
+pub(crate) fn number_value(kind: Token, text: &str, offset: u64) -> Result<Number, ParseError> {
+    if kind == Token::Int {
+        if let Ok(num) = text.parse::<i64>() {
+            return Ok(Number::Int(num));
+        }
+    }
+    // An `Int` that overflows i64 falls back to f64, as before.
+    match text.parse::<f64>() {
+        Ok(num) => Ok(Number::Double(num)),
+        Err(e) => Err(ParseError::malformed(
+            offset,
+            format!("invalid number {:?}: {}", text, e),
+        )),
     }
 }
 
