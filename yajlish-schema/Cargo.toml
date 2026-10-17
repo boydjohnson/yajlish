@@ -1,0 +1,29 @@
+[package]
+name = "yajlish-schema"
+version = "0.1.0"
+description = "Validate and build typed values from a JSON stream against JSON Schemas, with a generated yajlish Handler"
+keywords = ["json", "json-schema", "streaming", "validation"]
+categories = ["parsing"]
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition = "2021"
+
+[dependencies]
+yajlish = { path = "..", version = "0.5" }
+yajlish-schema-macros = { path = "../yajlish-schema-macros", version = "0.1" }
+regex = { version = "1", optional = true }
+serde = { version = "1", optional = true }
+
+[features]
+# Support the `pattern` keyword.
+pattern = ["dep:regex", "yajlish-schema-macros/pattern"]
+# Derive Serialize and Deserialize on generated types.
+serde = ["dep:serde", "yajlish-schema-macros/serde"]
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+proptest.workspace = true
+serde_json.workspace = true
+trybuild = "1"
+regex = "1"

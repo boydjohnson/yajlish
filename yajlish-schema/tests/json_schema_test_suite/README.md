@@ -1,0 +1,1 @@
+Vendored from https://github.com/json-schema-org/JSON-Schema-Test-Suite at commit 55719286c33ae0d1823bfb65fea10338a19bc37c (tests/draft2020-12/*.json only, without optional/). MIT licensed, see LICENSE.

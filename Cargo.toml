@@ -1,5 +1,6 @@
 [workspace]
-members = [".", "yajlish-ndjson"]
+resolver = "2"
+members = [".", "yajlish-ndjson", "yajlish-schema", "yajlish-schema-macros"]
 
 [workspace.package]
 authors = ["Boyd Johnson <johnson.boyd@gmail.com>"]
