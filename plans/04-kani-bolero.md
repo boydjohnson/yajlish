@@ -1,0 +1,222 @@
+# Plan 4: Bounded proofs with Kani, dual-engine harnesses with Bolero
+
+Status: draft · Target: `yajlish` 0.5.x, `yajlish-ndjson` 0.1.x, `yajlish-schema` 0.1.x · Depends on: [Plan 1](01-logos-lexer.md) (lexer, `decode_str`), [Plan 2](02-schema-handler-macro.md), [Plan 3](03-ndjson-crate.md) · Unblocks: the parser-hardening list at the end of Plan 1
+
+## Why
+
+The workspace already has good dynamic coverage: unit tests, split-point tests (`tests/test_split_points.rs`), JSONTestSuite with an allowlist (`tests/test_json_test_suite.rs`), and proptest differentials against `serde_json` and `jsonschema`. What it lacks is any *exhaustive* statement. Every claim of the form "for all inputs" is currently checked on samples.
+
+Kani gives exhaustive answers for small, bounded inputs, which is exactly the shape of the code most likely to hide off-by-one and boundary bugs: the lexer's "may this token still grow" rules, `\uXXXX` and surrogate handling, the parser's status transitions, and the schema crate's int/float comparisons. Bolero lets one harness body run three ways: as a plain `#[test]` with random inputs, under libFuzzer/AFL via `cargo bolero`, and under Kani. So each property is written once and gets both bounded proof and unbounded fuzzing.
+
+Kani is **not** used for end-to-end RFC 8259 conformance over arbitrary documents. That stays with JSONTestSuite and the differential tests, which Bolero will now also fuzz.
+
+## Goals
+
+1. Kani proofs for every pure subroutine listed under "Harnesses" below, each finishing in under ~2 minutes in CI.
+2. A Kani proof that the parser never panics and keeps its `Context` invariants on every byte string up to a fixed length (target 8, see "Bounds").
+3. A Kani proof that streaming is chunk-independent: splitting the input at any point gives the same tokens and events as not splitting it.
+4. A Kani soundness harness ("accepted only if valid") against a small reference recognizer. It **fails today** on the cases in `N_ALLOWLIST`; it becomes the regression oracle for the parser-hardening fix.
+5. Bolero fuzz targets for the same properties plus the differential properties that are too big for Kani, seeded from the existing fixtures and JSONTestSuite.
+6. CI: Bolero harnesses run as ordinary tests on every PR; Kani runs on every PR; fuzzing runs time-boxed on a schedule.
+
+## Non-goals
+
+- Proving full RFC 8259 compliance, or anything about inputs longer than the Kani bound.
+- Verifying the proc macro's code generation under Kani. The macro's helper functions get Bolero fuzzing only.
+- Verifying `logos`, `core::str::parse::<f64>` or `regex`. Where our code calls them we either let Kani check them as-is (logos-generated code, which is small) or stub them (float parsing, see "Stubs").
+- Rewriting the existing proptest tests. They stay; new properties go in Bolero. **Default picked, flag if wrong.**
+
+## Tooling
+
+### Dependencies
+
+```toml
+# each crate that has harnesses
+[dev-dependencies]
+bolero = "0.13"          # pin to the current release when K0 lands
+
+[lints.rust]
+# CI builds with RUSTFLAGS=-Dwarnings, and rustc's check-cfg warns on unknown cfgs.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }
+```
+
+The `[lints.rust]` entry is required, not optional: without it, the first `#[cfg(kani)]` breaks the `-Dwarnings` CI job (`.github/workflows/ci.yaml`).
+
+Kani itself is installed with `cargo install --locked kani-verifier && cargo kani setup`; it is not a Cargo dependency. The `kani` crate is injected only under `cargo kani`, so all direct uses of `kani::any()` sit behind `#[cfg(kani)]`.
+
+### Where harnesses live
+
+Most targets are `pub(crate)` (`is_number_prefix`, `hex4`, `Context`'s mutators, `num::cmp`), so harnesses live inside each crate:
+
+```
+src/verify/mod.rs           #[cfg(any(test, kani))] mod verify;  from lib.rs
+src/verify/lexer.rs         lexer + may_extend proofs
+src/verify/decode.rs        decode_str + hex4 proofs
+src/verify/parser.rs        state-machine proofs, Recorder handler
+src/verify/reference.rs     the reference token-sequence recognizer
+yajlish-ndjson/src/verify.rs
+yajlish-schema/src/verify.rs
+yajlish-schema-macros/tests/fuzz_names.rs   (public helpers only, Bolero only)
+fuzz corpora: <crate>/src/verify/__fuzz__/<harness>/corpus/   (cargo-bolero's default)
+```
+
+### One body, three engines
+
+Kani needs fixed-size inputs, and Bolero's Kani driver builds values with `kani::any()`. So shared harnesses take a fixed array plus a length, which also works unchanged as a fuzz input:
+
+```rust
+#[test]
+#[cfg_attr(kani, kani::proof, kani::unwind(10))]
+fn parser_never_panics() {
+    bolero::check!()
+        .with_type::<([u8; 8], u8)>()
+        .cloned()
+        .for_each(|(buf, len)| {
+            let input = &buf[..usize::from(len) % 9];
+            let mut handler = Recorder::default();
+            let mut parser = Parser::new(&mut handler);
+            let mut reader = input;
+            let _ = parser.parse(&mut reader).and_then(|()| parser.finish_parse());
+        });
+}
+```
+
+Two corrections to the sketch in the request this plan answers: `Parser::parse` takes `&mut impl BufRead`, not a slice, and `Handler` has ten required methods with no `Default` dummy, so `src/verify/parser.rs` provides a `Recorder` that logs events into a fixed-capacity array (no `Vec` growth under Kani) and asserts the per-event invariants below.
+
+Harnesses that only make sense under Kani (they use `kani::assume` or `kani::cover!`) are plain `#[cfg(kani)] #[kani::proof]` functions. Fuzz-only harnesses use `Vec<u8>` and are plain `#[test]` + `bolero::check!()`.
+
+Commands:
+
+```
+cargo test --workspace                                  # every Bolero harness, random inputs
+cargo kani --tests -p yajlish                           # every Kani proof in a crate
+cargo kani --tests -p yajlish --harness parser_never_panics
+cargo bolero test -p yajlish verify::parser::parser_never_panics --engine libfuzzer -T 5min
+cargo kani --tests -Z concrete-playback --concrete-playback=print --harness <h>   # counterexample -> unit test
+```
+
+Concrete playback is how a failing proof turns into a regular `#[test]`: every Kani counterexample found during this plan gets committed as a unit test next to the code it breaks.
+
+## Bounds and stubs
+
+### Bounds
+
+| Harness family | Input bound | Unwind | Reason |
+|---|---|---|---|
+| Lexer predicates (`is_number_prefix`, `string_may_extend`) | 8 bytes | 10 | Loops are one iteration per byte. |
+| `hex4`, surrogate math | 4 / 12 bytes | 6 / 14 | Fixed-length by construction. |
+| `decode_str` | 10 bytes (two quotes + 8) | 12 | Covers one surrogate pair `😀` only at 14, so the pair proof gets its own harness with a fixed shape. |
+| Parser state machine | 8 bytes, start 6 | 10 | logos runs per token, `StreamLexer` loops per refill, `parse_tokens` per token. Grow until solver time hits ~2 min. |
+| Chunk independence | 6 bytes, any split | 8 | Runs the lexer twice. |
+| Selector parser | 6 bytes | 8 | |
+| `num::cmp_int_float`, `FromValue for i64` | all `i64` × all `f64` | none | No loops; floats are bit-precise in Kani. |
+
+These are starting points. I could not run `cargo kani` while writing this plan, so solver times are unmeasured; K0 records the measured time per harness in this file.
+
+### Stubs
+
+- **Float parsing.** `text.parse::<f64>()` (`src/parser.rs:169`) pulls in `core`'s dec2flt, which is far too large for Kani. Extract the number branch of `parse_tokens` (`src/parser.rs:157`–`185`) into a private `fn number_value(kind: Token, text: &str) -> Result<Number, ParseError>`, and in state-machine harnesses replace it with `#[kani::stub(number_value, nondet_number_value)]` returning an arbitrary `Int`/`Double`. `number_value` itself is checked by Bolero against `serde_json` only. This is the only production-code refactor this plan needs.
+- **Error messages.** `ParseError::malformed` is called with `format!` strings. If formatting dominates solver time (measure first), stub `alloc::fmt::format` to return an empty `String` in parser harnesses. Harnesses assert on error *kind and offset*, never on message text, so the stub can't hide a bug they check for.
+- **logos-generated code is not stubbed.** It is small per token, and any `unsafe` indexing it emits gets checked by Kani for free.
+
+## Harnesses
+
+Engine: **K** = Kani proof, **B** = Bolero (test + fuzz), **K+B** = shared body. "Today" is what I expect from reading the code, not from a run.
+
+### Core crate: lexer (`src/lexer/`)
+
+| Name | Engine | Property | Today |
+|---|---|---|---|
+| `number_prefix_is_prefix_closed` | K | `is_number_prefix(b) ⇒ is_number_prefix(&b[..k])` for every `k` (`src/lexer/mod.rs:233`). | pass |
+| `number_prefix_always_extends` | K | The doc comment's claim: if `is_number_prefix(b)` then some single byte `c` makes `b + c` a number prefix. Witness search over `b"0.e+-"`, so no ∃ is needed. | pass |
+| `complete_number_is_prefix` | K | If `Token::lexer(b)` yields exactly one `Int`/`Number` spanning all of `b`, then `is_number_prefix(b)`. Ties the hand-written DFA to the logos regex. | pass |
+| `string_may_extend_is_sound` | K | For any body ≤ 4 bytes and suffix ≤ 4 bytes: if `"` + body + suffix lexes as one `String` token, then `string_may_extend(body)` (`src/lexer/mod.rs:201`). A false here means the stream lexer reports an error at a chunk boundary for valid input. | pass |
+| `string_may_extend_never_panics` | K | Covers the `\u` slicing at `src/lexer/mod.rs:214` for every truncation. | pass |
+| `keyword_may_extend` | K | `may_extend` on `t`/`f`/`n` prefixes agrees with "is a proper prefix of the keyword". | pass |
+| `chunking_is_invisible` | K+B | For any input ≤ 6 bytes and split `k`, `StreamLexer` over a two-chunk reader yields the same `(Token, bytes, offset)` sequence and the same error offset as over one chunk. Fuzz version uses arbitrary chunk-size lists and long inputs. This is the exhaustive form of `test_every_chunk_size_matches_unchunked`. | pass |
+| `max_token_len_is_enforced` | K | With nondeterministic `max_token_len ≤ 8`, no `Lexed::Token` longer than the cap is ever returned, chunked or not. | pass |
+| `offsets_are_monotone` | K+B | Token offsets strictly increase and each points at the token's first byte in the input. | pass |
+
+### Core crate: `decode_str` (`src/decode.rs`)
+
+| Name | Engine | Property | Today |
+|---|---|---|---|
+| `hex4_matches_from_str_radix` | K | For all 4-byte inputs, `hex4` equals `u16::from_str_radix` when all bytes are hex digits and `None` otherwise (`src/decode.rs:167`). | pass |
+| `decode_never_panics` | K+B | Any `&str` ≤ 10 bytes (built from bytes with `kani::assume(from_utf8(..).is_ok())`). Covers the `&body[run..i]` slices. | pass |
+| `surrogate_pair_is_always_scalar` | K | For every high/low pair, the `ok_or(LoneSurrogate)` at `src/decode.rs:141` is unreachable (`kani::cover!` on that branch must be unsatisfiable), so that error path is dead code. | pass |
+| `lexer_and_decoder_agree` | K+B | If bytes lex as one `String` token and are valid UTF-8, `decode_str` returns `Ok` or `LoneSurrogate`, never `NotQuoted`, `UnescapedCharacter` or `InvalidEscape`. | pass |
+| `decode_matches_serde_json` | B | Fuzz-only: `decode_str(raw) == serde_json::from_str::<String>(raw)` modulo lone surrogates. Extends the existing proptest to coverage-guided input. | pass |
+| `borrowed_iff_no_escape` | K | `Cow::Borrowed` exactly when the body has no backslash. | pass |
+
+### Core crate: parser state machine (`src/parser.rs`, `src/common.rs`)
+
+All use `Recorder`, which asserts on every callback:
+
+- `ctx.num_open_braces() + ctx.num_open_brackets()` equals the depth `Recorder` tracks from start/end events, and `last_enclosing()` agrees with the innermost open event;
+- `handle_map_key` only arrives inside a map, directly after `StartMap` or a value;
+- `ctx.offset()` is within the input and strictly greater than the previous event's.
+
+| Name | Engine | Property | Today |
+|---|---|---|---|
+| `parser_never_panics` | K+B | Any input ≤ 8 bytes, through `parse` then `finish_parse`. Includes the `dec_braces`/`dec_brackets` subtractions (`src/common.rs:151`, `:159`), which must never underflow. | pass, I expect |
+| `context_invariants_hold` | K+B | The `Recorder` assertions above, on every input ≤ 8 bytes. | **may fail**: the mismatched-`}` path (`src/parser.rs:114`–`131`) calls `handle_end_map` and then does not pop, so `Recorder`'s depth and the context can disagree on `[}`. |
+| `no_callback_after_abort` | K | With a `Recorder` that returns `Abort` at a nondeterministic event index, no callback follows it and `parse` returns. | pass |
+| `accepts_only_valid_json` | K+B | If `parse` and `finish_parse` both return `Ok`, the reference recognizer accepts the same token sequence. | **fails**, by design. Counterexamples expected for the `N_ALLOWLIST` classes: `[1,]`, `{"a"::1}` (`:` outside `MapSep` ignored, `src/parser.rs:240`), `[][]` (`[`/`{` don't check status, `:134`), `[}]` (status overwritten after `LexicalError`, `:121`). |
+| `accepts_all_valid_json` | K+B | The converse: every token sequence the reference accepts is accepted by the parser. Under Kani this is bounded by the input length; under Bolero inputs come from a JSON generator serialized with random whitespace. | pass, I expect |
+| `events_match_reference` | K+B | For accepted input, the event sequence equals the one the reference recognizer emits. | pass on valid input |
+| `chunked_parse_is_invisible` | K+B | Same as `chunking_is_invisible`, at the event level through `Parser`. Exhaustive form of `tests/test_split_points.rs`. | pass |
+
+The reference recognizer (`src/verify/reference.rs`) is an explicit-stack pushdown automaton over `Token`s, written directly from the RFC 8259 grammar, about 60 lines, no recursion (so Kani needs no extra unwinding for depth). Before it is trusted as an oracle it is run over JSONTestSuite: it must accept every `y_*` and reject every `n_*` whose tokens lex, with **no allowlist**.
+
+`accepts_only_valid_json` is the plan's main payoff. It lands in K3 marked `#[cfg_attr(kani, kani::should_panic)]`, with each counterexample committed as a failing-then-ignored unit test. Fixing the parser so it passes is the parser-hardening task from Plan 1 and is a behaviour change, so it is a separate PR (K3b), which also empties `N_ALLOWLIST`. **Default picked, flag if you'd rather fold the fix into this plan.**
+
+### `yajlish-ndjson`
+
+| Name | Engine | Property | Today |
+|---|---|---|---|
+| `selector_parse_never_panics` | K+B | Any `&str` ≤ 6 bytes through `SelectorParser::parse` and both token parsers (`yajlish-ndjson/src/selector_parser.rs:114` slices at `pos`). | pass |
+| `selector_round_trip` | B | Printing a `Vec<Selector>` (identifiers without `.`/`[`, any index) and parsing it gives the same vector. Pins down whitespace handling inside keys, which `test_whitespace_and_unicode` shows is preserved. | pass, I expect |
+| `ndjson_never_panics` | K+B | Parser + `NdJsonHandler` with selector `[0]` or `.a` on any input ≤ 8 bytes; `finish()` returns. | pass, I expect |
+| `ndjson_lines_match_elements` | B | Fuzz version of `yajlish-ndjson/tests/test_prop_test.rs`: each output line parses (with `serde_json`) to the matching element of the selected array, and `SelectorNotFound` exactly when `serde_json`'s pointer lookup finds no array. | pass |
+
+### `yajlish-schema` and the `handler!` macro
+
+| Name | Engine | Property | Today |
+|---|---|---|---|
+| `cmp_int_float_is_exact` | K | For all `i64` and `f64`, `num::cmp` (`yajlish-schema/src/num.rs:21`) equals an exact reference that compares `i` with `f`'s decomposed mantissa and exponent in `i128`. `None` exactly when `f` is NaN. | pass |
+| `cmp_is_antisymmetric` | K | `cmp(a, b) == cmp(b, a).map(Ordering::reverse)` for all `Num` pairs. | pass |
+| `int_multiple_of_no_overflow` | K | `is_multiple_of(Int, Int)` (`num.rs:40`) never panics, including `i64::MIN` by `-1`, and equals `x.checked_rem(y) == Some(0)` where that is defined. | pass |
+| `float_multiple_of_never_panics` | K | The float branch for all `f64` pairs. Only panic-freedom and "infinite quotient is not a multiple"; the 1e-9 tolerance is a spec choice, not something to prove. | pass |
+| `i64_from_float_is_exact` | K | For all `f64`, `FromValue for i64` (`yajlish-schema/src/value.rs:203`) returns `Ok(i)` only when `i as f64 == x`, and errors exactly when `x` is fractional, non-finite or outside `[-2^63, 2^63)`. | pass |
+| `runtime_never_panics` | K | For one small fixed schema generated by `handler!` in the test (an object with one required integer and one optional string), feed `Runtime::event` any sequence of ≤ 6 events built from `kani::any()` (including unbalanced ones), then `finish()`. | pass, I expect |
+| `candidates_only_shrink` | K+B | `live_candidates()` never increases within a record. | pass, I expect |
+| `unique_means_exactly_one` | B | With `match = unique`, an `Ok(Record)` is produced only when `jsonschema` accepts the element against exactly one schema. Fuzz version of `test_differential.rs` over the same schema list. | pass |
+| `names_are_valid_idents` | B | In `yajlish-schema-macros`: for any `&str`, `ident(&snake(s))` and, whenever `pascal(s)` is non-empty, `ident(&pascal(s))` don't panic (`proc_macro2::Ident::new` panics on invalid identifiers; `lib.rs:639`, `types.rs:589`, `:607`). Also checks that every caller handles `pascal` returning an empty string. | unknown; `pascal` can return `""` by its doc comment, so the property checks that no caller passes that to `ident`. |
+
+## Fuzz corpora and CI
+
+- Seed every Bolero target that takes bytes from `tests/valid_json_fixtures/`, `tests/json_test_suite/test_parsing/` and `yajlish-ndjson`'s fixtures, copied into `__fuzz__/<target>/corpus/` by a small `cargo xtask`-free script in `scripts/seed-corpora.sh`.
+- New CI jobs in `.github/workflows/ci.yaml`:
+  - `kani` (every PR): `model-checking/kani-github-action@v1`, running `cargo kani --tests --workspace`. Harnesses marked `should_panic` keep it green until K3b.
+  - `fuzz` (nightly schedule, not PRs): nightly toolchain, `cargo install cargo-bolero`, 5 minutes per target with libFuzzer, uploading any crash as an artifact.
+- The existing `cargo test --all` job runs every Bolero harness with random inputs at no extra setup cost.
+
+## Milestones
+
+| # | Deliverable | Done when |
+|---|---|---|
+| K0 | Tooling: `bolero` dev-dep, `[lints.rust]` check-cfg, `verify` modules, `Recorder`, `number_value` extraction, Kani CI job | `cargo kani` runs one trivial proof in CI; `cargo test` unchanged; solver times recorded here |
+| K1 | Lexer and `decode_str` proofs | All lexer/decoder rows green under Kani and as tests |
+| K2 | Chunk independence (lexer and parser levels) | `chunking_is_invisible`, `chunked_parse_is_invisible` green at bound 6 |
+| K3 | Parser state machine, reference recognizer, `accepts_only_valid_json` as `should_panic` | Reference passes JSONTestSuite with no allowlist; counterexamples committed as unit tests |
+| K3b | Parser hardening (separate PR, behaviour change) | `accepts_only_valid_json` passes without `should_panic`; `N_ALLOWLIST` is empty |
+| K4 | ndjson and selector harnesses | Rows green |
+| K5 | Schema `num`/`value` proofs, runtime harness, macro name fuzzing | Rows green |
+| K6 | Corpora seeded, nightly fuzz job | One clean nightly run per target |
+
+K0–K2 can be one PR. K3, K3b, K4 and K5 are separate PRs.
+
+## Open questions
+
+1. **Splitting a token across `parse` calls.** Each `Parser::parse` builds a new `StreamLexer` that sees EOF at the end of its reader (`src/parser.rs:61`), so `parse(b"[1")` then `parse(b"2]")` lexes `1` and `2` as two numbers, not `12`. Offsets are documented as absolute across calls, which suggests multi-call parsing is supported. Is that split the intended behaviour? If yes, a harness pins it; if not, it is a bug for K3b.
+2. **Kani bound for the parser.** 8 bytes reaches `{"a":1}` and `[[[]]]` but not a surrogate pair inside a document. If K0's timings allow 12, that is worth the extra CI minutes.
