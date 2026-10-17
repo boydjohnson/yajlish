@@ -5,7 +5,7 @@ use pretty_assertions::assert_eq;
 use yajlish::Parser;
 use yajlish_ndjson::{NdJsonHandler, Selector};
 
-fn read_input_to_bytes(p: &str, s: &str) -> String {
+pub fn read_input_to_bytes(p: &str, s: &str) -> String {
     std::fs::read_to_string(format!("tests/{}/{}", p, s)).unwrap()
 }
 
@@ -23,6 +23,8 @@ pub fn test_ndjson_fixture(p: &str, s: &str, selectors: Vec<Selector>) {
     let mut parser = Parser::new(&mut handler);
 
     assert_eq!(parser.parse(&mut input.as_bytes()), Ok(()));
+    assert_eq!(parser.finish_parse(), Ok(()));
+    handler.finish().unwrap();
 
     assert_eq!(output.as_bytes(), buf.as_slice());
 }
@@ -39,6 +41,8 @@ pub fn test_ndjson_fixture_split(p: &str, s: &str, selectors: Vec<Selector>) {
         let mut handler = NdJsonHandler::new(&mut buf, selectors.clone());
         let mut parser = Parser::new(&mut handler);
         assert_eq!(parser.parse(&mut reader), Ok(()));
+        assert_eq!(parser.finish_parse(), Ok(()));
+        handler.finish().unwrap();
         buf
     };
 

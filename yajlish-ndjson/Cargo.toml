@@ -19,3 +19,5 @@ lalrpop = "0.19"
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+proptest.workspace = true
+serde_json.workspace = true

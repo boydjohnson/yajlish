@@ -3,19 +3,94 @@
 //!
 
 use std::io::Write;
-use yajlish::{Context, Handler, ParserStatus, Status};
+use yajlish::{decode_str, Context, Handler, ParserStatus, Status};
 
-/// Parser.
+/// Writes each element of the selected array as one line of `OUT`.
+///
+/// After parsing, call [`NdJsonHandler::finish`]: write errors, a selector
+/// that matched nothing, and values that cannot be written as JSON make the
+/// handler abort the parse, and only `finish` reports them.
+///
+/// By default the handler keeps receiving (and ignoring) events after the
+/// selected array closes, so that the parser checks the rest of the
+/// document; call `Parser::finish_parse` too. [`NdJsonHandler::stop_early`]
+/// opts out of that.
 pub struct NdJsonHandler<OUT> {
-    out: OUT,
+    sink: Sink<OUT>,
 
     context: NdjsonContext,
+    found: bool,
+    stop_early: bool,
+}
+
+/// Why the conversion failed.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum NdJsonError {
+    /// Writing to the output failed.
+    Io(std::io::Error),
+    /// The selected key or index never appeared, or the value it selected
+    /// is not an array.
+    SelectorNotFound,
+    /// A number too large for `f64`, which cannot be written as JSON.
+    NonFiniteNumber,
+}
+
+impl std::fmt::Display for NdJsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NdJsonError::Io(e) => write!(f, "write error: {}", e),
+            NdJsonError::SelectorNotFound => write!(f, "the selector matched no array"),
+            NdJsonError::NonFiniteNumber => write!(f, "number out of range for f64"),
+        }
+    }
+}
+
+impl std::error::Error for NdJsonError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            NdJsonError::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// The output plus the first error, after which nothing more is written.
+struct Sink<OUT> {
+    out: OUT,
+    error: Option<NdJsonError>,
+}
+
+impl<OUT: Write> Sink<OUT> {
+    fn put(&mut self, bytes: &[u8]) {
+        if self.error.is_none() {
+            if let Err(e) = self.out.write_all(bytes) {
+                self.error = Some(NdJsonError::Io(e));
+            }
+        }
+    }
+
+    fn put_fmt(&mut self, args: std::fmt::Arguments<'_>) {
+        if self.error.is_none() {
+            if let Err(e) = self.out.write_fmt(args) {
+                self.error = Some(NdJsonError::Io(e));
+            }
+        }
+    }
+
+    fn fail(&mut self, error: NdJsonError) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
 }
 
 #[derive(Debug)]
 enum NdjsonContext {
     Selecting(Select),
     Writing(WritingCtx),
+    /// The selected array has closed.
+    Done,
 }
 
 #[derive(Debug)]
@@ -81,7 +156,7 @@ impl Select {
                 self.stack
                     .last()
                     .is_some_and(|s| (**s).is_correct_location(ctx))
-                    && ident == val
+                    && decode_str(val).is_ok_and(|key| key == ident.as_str())
             }
             _ => false,
         }
@@ -190,13 +265,50 @@ where
             })
         };
 
-        NdJsonHandler { out, context }
+        NdJsonHandler {
+            sink: Sink { out, error: None },
+            context,
+            found: false,
+            stop_early: false,
+        }
+    }
+
+    /// Abort the parse as soon as the selected array closes, instead of
+    /// letting the parser check the rest of the document. Malformed JSON
+    /// after the array then goes unnoticed.
+    #[must_use]
+    pub fn stop_early(mut self) -> Self {
+        self.stop_early = true;
+        self
+    }
+
+    /// The output, or the error that stopped the conversion.
+    ///
+    /// # Errors
+    /// `Io` if a write failed, `NonFiniteNumber` for a number that cannot be
+    /// written as JSON, `SelectorNotFound` if no array was selected.
+    pub fn finish(self) -> Result<OUT, NdJsonError> {
+        if let Some(e) = self.sink.error {
+            return Err(e);
+        }
+        if !self.found {
+            return Err(NdJsonError::SelectorNotFound);
+        }
+        Ok(self.sink.out)
+    }
+
+    fn status(&self) -> Status {
+        if self.sink.error.is_some() {
+            Status::Abort
+        } else {
+            Status::Continue
+        }
     }
 
     fn increment_selectors(&mut self, ctx: &Context) {
         let update = match &mut self.context {
             NdjsonContext::Selecting(ref mut selecting) => selecting.remove_last(),
-            NdjsonContext::Writing(_) => false,
+            NdjsonContext::Writing(_) | NdjsonContext::Done => false,
         };
 
         if update {
@@ -218,16 +330,17 @@ where
                 if !writing.is_at_correct_location(ctx)
                     && ctx.parser_status() == ParserStatus::MapNeedKey
                 {
-                    self.out.write_all(b",").expect("Unable to write");
+                    self.sink.put(b",");
                 } else if writing.is_inside_array() && writing.is_at_correct_location(ctx) {
                     if writing.is_first_value() {
                         writing.first()
                     } else {
-                        self.out.write_all(b"\n").expect("Unable to write");
+                        self.sink.put(b"\n");
                     }
                 }
-                write!(self.out, "{}:", val).expect("Unable to write to stdout")
+                self.sink.put_fmt(format_args!("{}:", val));
             }
+            NdjsonContext::Done => {}
         }
     }
 
@@ -240,19 +353,20 @@ where
                 if !writing.is_at_correct_location(ctx)
                     && ctx.parser_status() == ParserStatus::ArrayNeedVal
                 {
-                    self.out.write_all(b",").expect("Unable to write");
+                    self.sink.put(b",");
                 } else if writing.is_inside_array() && writing.is_at_correct_location(ctx) {
                     if writing.is_first_value() {
                         writing.first()
                     } else {
-                        self.out.write_all(b"\n").expect("Unable to write");
+                        self.sink.put(b"\n");
                     }
                 }
 
-                write!(self.out, "{}", val).expect("Unable to write to stdout");
+                self.sink.put_fmt(format_args!("{}", val));
             }
+            NdjsonContext::Done => {}
         }
-        Status::Continue
+        self.status()
     }
 
     fn map_start(&mut self, ctx: &Context) {
@@ -267,26 +381,25 @@ where
                 if !writing.is_at_correct_location(ctx)
                     && ctx.parser_status() == ParserStatus::ArrayNeedVal
                 {
-                    self.out.write_all(b",").expect("Unable to write");
+                    self.sink.put(b",");
                 } else if writing.is_at_correct_location(ctx) {
                     if writing.is_first_value() {
                         writing.first()
                     } else {
-                        self.out.write_all(b"\n").expect("Unable to write");
+                        self.sink.put(b"\n");
                     }
                 }
-                self.out.write_all(b"{").expect("Unable to write");
+                self.sink.put(b"{");
             }
+            NdjsonContext::Done => {}
         }
     }
 
     fn map_end(&mut self, ctx: &Context) {
         if let NdjsonContext::Writing(writing) = &self.context {
-            self.out.write_all(b"}").expect("Unable to write");
+            self.sink.put(b"}");
             if writing.is_at_correct_location(ctx) {
-                self.out
-                    .write_all(b"\n")
-                    .expect("Unable to write to stdout");
+                self.sink.put(b"\n");
             }
         }
     }
@@ -304,38 +417,41 @@ where
                 if !writing.is_at_correct_location(ctx)
                     && ctx.parser_status() == ParserStatus::ArrayNeedVal
                 {
-                    self.out.write_all(b",").expect("Unable to write");
+                    self.sink.put(b",");
                 } else if writing.is_at_correct_location(ctx) {
                     if writing.is_first_value() {
                         writing.first()
                     } else {
-                        self.out.write_all(b"\n").expect("Unable to write");
+                        self.sink.put(b"\n");
                     }
                 }
-                self.out.write_all(b"[").expect("Unable to write");
+                self.sink.put(b"[");
             } else {
                 writing.set_inside_array();
+                self.found = true;
             }
         }
     }
 
     fn array_end(&mut self, ctx: &Context) -> Status {
         if let NdjsonContext::Writing(writing) = &self.context {
-            if writing.is_inside_array() && writing.is_at_correct_location(ctx) {
-                self.out
-                    .write_all(b"\n")
-                    .expect("Unable to write to stdout");
+            // End the last line, if there was one: an empty array writes
+            // nothing.
+            if writing.is_inside_array() && writing.is_at_correct_location(ctx) && !writing.first {
+                self.sink.put(b"\n");
             }
 
             if writing.is_at_correct_location(ctx) {
-                return Status::Abort;
+                self.context = NdjsonContext::Done;
+                if self.stop_early {
+                    return Status::Abort;
+                }
+                return self.status();
             }
 
-            self.out.write_all(b"]").expect("Unable to write");
-            Status::Continue
-        } else {
-            Status::Continue
+            self.sink.put(b"]");
         }
+        self.status()
     }
 }
 
@@ -345,6 +461,12 @@ impl<OUT: Write> Handler for NdJsonHandler<OUT> {
     }
 
     fn handle_double(&mut self, ctx: &Context, val: f64) -> Status {
+        if !val.is_finite() {
+            if let NdjsonContext::Writing(_) = self.context {
+                self.sink.fail(NdJsonError::NonFiniteNumber);
+                return Status::Abort;
+            }
+        }
         self.handle_value(ctx, val)
     }
 
@@ -362,23 +484,22 @@ impl<OUT: Write> Handler for NdJsonHandler<OUT> {
 
     fn handle_start_map(&mut self, ctx: &Context) -> Status {
         self.map_start(ctx);
-        Status::Continue
+        self.status()
     }
 
     fn handle_end_map(&mut self, ctx: &Context) -> Status {
         self.map_end(ctx);
-        Status::Continue
+        self.status()
     }
 
     fn handle_map_key(&mut self, ctx: &Context, key: &str) -> Status {
         self.map_key(ctx, key);
-        Status::Continue
+        self.status()
     }
 
     fn handle_start_array(&mut self, ctx: &Context) -> Status {
         self.array_start(ctx);
-
-        Status::Continue
+        self.status()
     }
 
     fn handle_end_array(&mut self, ctx: &Context) -> Status {
@@ -389,7 +510,9 @@ impl<OUT: Write> Handler for NdJsonHandler<OUT> {
 /// Refers to either a key or an index in an array.
 #[derive(Debug, PartialEq, Clone, Hash, PartialOrd, Ord, Eq)]
 pub enum Selector {
-    /// A key in a JSON object.
+    /// A key in a JSON object, as its decoded value: `Identifier("foo")`
+    /// matches the key written `"foo"` and also one written with escapes,
+    /// such as `"\u0066oo"`.
     Identifier(String),
     /// A JSON Array value by index.
     Index(usize),
@@ -421,6 +544,8 @@ mod tests {
         let mut parser = Parser::new(&mut handler);
 
         parser.parse::<BufReader<&[u8]>>(&mut input).unwrap();
+        parser.finish_parse().unwrap();
+        handler.finish().unwrap();
 
         assert_eq!(out, output);
     }
@@ -431,6 +556,16 @@ mod tests {
             "[{ \"foo\": [1,2,3] },{ \"foo\": [5,4,5] }]".as_bytes(),
             vec![],
             "{\"foo\":[1,2,3]}\n{\"foo\":[5,4,5]}\n".as_bytes(),
+        );
+    }
+
+    #[test]
+    fn test_empty_array_writes_nothing() {
+        assert_ndjson(b"[]", vec![], b"");
+        assert_ndjson(
+            b"{ \"foo\": [] }",
+            vec![Selector::Identifier("foo".to_owned())],
+            b"",
         );
     }
 
@@ -447,7 +582,7 @@ mod tests {
     fn test_spurious_key_before_correct_key() {
         assert_ndjson(
             "{ \"foo\": [1,2,3], \"bar\": { \"data\": 10}, \"data\": [10.4,4.4, 5.42] }".as_bytes(),
-            vec![Selector::Identifier("\"data\"".to_string())],
+            vec![Selector::Identifier("data".to_string())],
             "10.4\n4.4\n5.42\n".as_bytes(),
         );
     }
@@ -458,10 +593,10 @@ mod tests {
             "{ \"foo\": [{ \"bar\": { \"baz\": [null, true, false], \"data\": [6, 6.5, null]}}]}"
                 .as_bytes(),
             vec![
-                Selector::Identifier("\"foo\"".to_owned()),
+                Selector::Identifier("foo".to_owned()),
                 Selector::Index(0),
-                Selector::Identifier("\"bar\"".to_owned()),
-                Selector::Identifier("\"data\"".to_owned()),
+                Selector::Identifier("bar".to_owned()),
+                Selector::Identifier("data".to_owned()),
             ],
             "6\n6.5\nnull\n".as_bytes(),
         );
@@ -471,10 +606,7 @@ mod tests {
     fn test_selector_index() {
         assert_ndjson(
             "{ \"foo\": [[1,2,3], [8.68,null,2.667]]}".as_bytes(),
-            vec![
-                Selector::Identifier("\"foo\"".to_owned()),
-                Selector::Index(1),
-            ],
+            vec![Selector::Identifier("foo".to_owned()), Selector::Index(1)],
             "8.68\nnull\n2.667\n".as_bytes(),
         );
     }
@@ -483,7 +615,7 @@ mod tests {
     fn test_objects_in_array() {
         assert_ndjson(
             "{ \"foo\": [{ \"bar\": 10}, {\"bar\": 11 }]}".as_bytes(),
-            vec![Selector::Identifier("\"foo\"".to_owned())],
+            vec![Selector::Identifier("foo".to_owned())],
             "{\"bar\":10}\n{\"bar\":11}\n".as_bytes(),
         )
     }
@@ -492,7 +624,7 @@ mod tests {
     fn test_basic_success() {
         assert_ndjson(
             "{ \"foo\": [1, 2, 3] }".as_bytes(),
-            vec![Selector::Identifier("\"foo\"".to_owned())],
+            vec![Selector::Identifier("foo".to_owned())],
             "1\n2\n3\n".as_bytes(),
         );
     }
@@ -501,7 +633,7 @@ mod tests {
     fn test_array_values_of_objects() {
         assert_ndjson(
             "{ \"foo\": [{ \"bar\": [false, null, 10.5, 50]}, { \"bar\": [true,\n 10.4578, null, 60] }]}".as_bytes(),
-            vec![Selector::Identifier("\"foo\"".to_owned())],
+            vec![Selector::Identifier("foo".to_owned())],
             "{\"bar\":[false,null,10.5,50]}\n{\"bar\":[true,10.4578,null,60]}\n".as_bytes()
         );
     }
@@ -509,8 +641,8 @@ mod tests {
     #[test]
     fn test_double_index_selector() {
         assert_ndjson(
-            "{ \"foo\": [[null,\"foo\",\"bar\"], [{ \"bar\": { \"bar\": [{ \"data\": [1,false,null,5.6]}]}}] }".as_bytes(),
-            vec![Selector::Identifier("\"foo\"".to_owned()), Selector::Index(1), Selector::Identifier("\"bar\"".to_owned()), Selector::Identifier("\"bar\"".to_owned()), Selector::Index(0), Selector::Identifier("\"data\"".to_owned())],
+            "{ \"foo\": [[null,\"foo\",\"bar\"], [{ \"bar\": { \"bar\": [{ \"data\": [1,false,null,5.6]}]}}]] }".as_bytes(),
+            vec![Selector::Identifier("foo".to_owned()), Selector::Index(1), Selector::Identifier("bar".to_owned()), Selector::Identifier("bar".to_owned()), Selector::Index(0), Selector::Identifier("data".to_owned())],
             "1\nfalse\nnull\n5.6\n".as_bytes()
         );
     }
@@ -521,10 +653,10 @@ mod tests {
             "{ \"gauss\": [{ \"foo\": null}, [{ \"feynman\": [{ \"foo\": [1, false, \"bar\"]}]}]]}"
                 .as_bytes(),
             vec![
-                Selector::Identifier("\"gauss\"".to_owned()),
+                Selector::Identifier("gauss".to_owned()),
                 Selector::Index(1),
-                Selector::Identifier("\"feynman\"".to_owned()),
-                Selector::Identifier("\"foo\"".to_owned()),
+                Selector::Identifier("feynman".to_owned()),
+                Selector::Identifier("foo".to_owned()),
             ],
             "1\nfalse\n\"bar\"\n".as_bytes(),
         );
@@ -534,7 +666,7 @@ mod tests {
     fn test_strings_in_array_in_array() {
         assert_ndjson(
             "{ \"gauss\": [false, [\"cauchey\", \"feynman\", \"riemann\"], 1, 2, true]}".as_bytes(),
-            vec![Selector::Identifier("\"gauss\"".to_owned())],
+            vec![Selector::Identifier("gauss".to_owned())],
             "false\n[\"cauchey\",\"feynman\",\"riemann\"]\n1\n2\ntrue\n".as_bytes(),
         );
     }
