@@ -1,5 +1,7 @@
 //! The `handler!` macro of `yajlish-schema`. See that crate's docs.
 
+#[cfg(test)]
+mod fuzz_names;
 mod lower;
 mod types;
 
