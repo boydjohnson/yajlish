@@ -7,20 +7,29 @@
 mod support;
 
 use serde_json::{json, Map, Value};
+use std::sync::OnceLock;
 use yajlish::{Context, Handler, Parser, Status};
 use yajlish_schema::__private::{Config, Raw, Runtime};
 
+// `support::config` leaks each `Config` (with `Box::leak`) to get a
+// `&'static` one. The configs here are built once and kept in statics: one
+// built per fuzz input, or held only by a local, ends up unreachable, and
+// libFuzzer's LeakSanitizer reports it as a leak, failing the target.
+
 /// An object with a required integer `n` and an optional string `s`.
 fn small_config() -> &'static Config {
-    support::config(
-        &[json!({
-            "type": "object",
-            "required": ["n"],
-            "properties": {"n": {"type": "integer"}, "s": {"type": "string"}}
-        })],
-        false,
-    )
-    .unwrap()
+    static CONFIG: OnceLock<&'static Config> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        support::config(
+            &[json!({
+                "type": "object",
+                "required": ["n"],
+                "properties": {"n": {"type": "integer"}, "s": {"type": "string"}}
+            })],
+            false,
+        )
+        .unwrap()
+    })
 }
 
 /// One of the events the runtime can receive, keys and strings raw. Includes
@@ -196,11 +205,14 @@ impl Handler for Watch {
 /// schemas at once, with and without discriminator dispatch.
 #[test]
 fn candidates_only_shrink() {
-    let schemas: Vec<Value> = SCHEMAS.iter().map(|s| load(s)).collect();
-    let configs = [
-        support::config_with(&schemas, false, true).unwrap(),
-        support::config_with(&schemas, false, false).unwrap(),
-    ];
+    static CONFIGS: OnceLock<[&'static Config; 2]> = OnceLock::new();
+    let configs = *CONFIGS.get_or_init(|| {
+        let schemas: Vec<Value> = SCHEMAS.iter().map(|s| load(s)).collect();
+        [
+            support::config_with(&schemas, false, true).unwrap(),
+            support::config_with(&schemas, false, false).unwrap(),
+        ]
+    });
     bolero::check!().with_type::<Vec<u8>>().for_each(|choices| {
         let text = serde_json::to_string(&gen_value(&mut choices.iter().copied(), 4)).unwrap();
         for cfg in configs {
@@ -223,7 +235,7 @@ fn candidates_only_shrink() {
 fn unique_means_exactly_one() {
     // In a static: bolero needs the test closure to be `RefUnwindSafe`,
     // and `jsonschema`'s validators are not.
-    static VALIDATORS: std::sync::OnceLock<Vec<jsonschema::Validator>> = std::sync::OnceLock::new();
+    static VALIDATORS: OnceLock<Vec<jsonschema::Validator>> = OnceLock::new();
     let schemas: Vec<Value> = SCHEMAS.iter().map(|s| load(s)).collect();
     VALIDATORS.get_or_init(|| {
         schemas
@@ -231,7 +243,8 @@ fn unique_means_exactly_one() {
             .map(|s| jsonschema::validator_for(s).unwrap())
             .collect()
     });
-    let cfg = support::config(&schemas, false).unwrap();
+    static CONFIG: OnceLock<&'static Config> = OnceLock::new();
+    let cfg = *CONFIG.get_or_init(|| support::config(&schemas, false).unwrap());
     bolero::check!()
         .with_type::<(Vec<u8>, u8)>()
         .for_each(|(choices, chunk)| {
