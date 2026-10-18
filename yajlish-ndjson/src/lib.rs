@@ -519,6 +519,8 @@ pub enum Selector {
 }
 
 pub mod selector_parser;
+#[cfg(any(test, kani))]
+mod verify;
 
 pub use self::selector_parser::{SelectorParseError, SelectorParser};
 

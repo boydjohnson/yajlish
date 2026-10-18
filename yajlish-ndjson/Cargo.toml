@@ -13,6 +13,12 @@ edition.workspace = true
 yajlish = { path = "..", version = "0.5" }
 
 [dev-dependencies]
+bolero = "0.13.7"
 pretty_assertions.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
+
+[lints.rust]
+# CI builds with RUSTFLAGS=-Dwarnings, and rustc's check-cfg warns on unknown
+# cfgs. `kani` is set by `cargo kani`, `fuzzing` by `cargo bolero`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }
