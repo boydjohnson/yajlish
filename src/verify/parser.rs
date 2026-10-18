@@ -20,8 +20,9 @@
 use super::{for_each_split, same_result, Chunks};
 use crate::{Context, Enclosing, Handler, ParseError, Parser, Status};
 
-/// One handler callback. Strings and keys are recorded by position, which
-/// `Recorder` checks against the input, so equal events mean equal text.
+/// One handler callback. Strings and keys are recorded by length; when it
+/// has the input, `Recorder` checks their text against it at the event's
+/// offset, so equal events at equal offsets mean equal text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Event {
     Null,
@@ -51,9 +52,18 @@ pub(crate) enum Event {
 /// - a key only arrives inside a map, directly after `StartMap` or a value;
 /// - `ctx.offset()` is inside the input and greater than the previous
 ///   event's.
+///
+/// With `abort_at(i)`, the `i`th callback returns `Abort`, and any callback
+/// after it fails.
 pub(crate) struct Recorder<'i, const N: usize> {
-    input: &'i [u8],
+    /// The input, when the tokens came from bytes. Otherwise offsets are
+    /// only checked against `end`.
+    input: Option<&'i [u8]>,
+    /// Offsets are below this.
+    end: u64,
     strict: bool,
+    abort_at: Option<usize>,
+    aborted: bool,
     events: [(Event, u64); N],
     len: usize,
     /// The open containers, innermost last.
@@ -66,14 +76,32 @@ pub(crate) struct Recorder<'i, const N: usize> {
 impl<'i, const N: usize> Recorder<'i, N> {
     pub(crate) fn new(input: &'i [u8], strict: bool) -> Self {
         Recorder {
-            input,
+            input: Some(input),
+            end: input.len() as u64,
             strict,
+            abort_at: None,
+            aborted: false,
             events: [(Event::Null, 0); N],
             len: 0,
             open: [Enclosing::LeftBrace; N],
             depth: 0,
             key_ok: false,
         }
+    }
+
+    /// For tokens that did not come from bytes: offsets must be below
+    /// `end`, and text is not checked.
+    pub(crate) fn for_tokens(end: u64, strict: bool) -> Self {
+        Recorder {
+            input: None,
+            end,
+            ..Recorder::new(&[], strict)
+        }
+    }
+
+    pub(crate) fn abort_at(mut self, index: usize) -> Self {
+        self.abort_at = Some(index);
+        self
     }
 
     pub(crate) fn events(&self) -> &[(Event, u64)] {
@@ -85,11 +113,9 @@ impl<'i, const N: usize> Recorder<'i, N> {
     }
 
     fn record(&mut self, ctx: &Context, event: Event) -> Status {
+        assert!(!self.aborted, "callback after Abort");
         let offset = ctx.offset();
-        assert!(
-            (offset as usize) < self.input.len(),
-            "offset past the input"
-        );
+        assert!(offset < self.end, "offset past the input");
         if self.strict {
             assert_eq!(
                 ctx.num_open_braces() + ctx.num_open_brackets(),
@@ -126,18 +152,24 @@ impl<'i, const N: usize> Recorder<'i, N> {
                 self.key_ok = self.innermost() == Some(Enclosing::LeftBrace);
             }
         }
+        if self.abort_at == Some(self.len - 1) {
+            self.aborted = true;
+            return Status::Abort;
+        }
         Status::Continue
     }
 
     /// Record a string or key, checking that it is the input's bytes at
     /// `ctx.offset()`.
     fn record_text(&mut self, ctx: &Context, val: &str, key: bool) -> Status {
-        let at = ctx.offset() as usize;
-        assert_eq!(
-            self.input.get(at..at + val.len()),
-            Some(val.as_bytes()),
-            "text is not the input at its offset"
-        );
+        if let Some(input) = self.input {
+            let at = ctx.offset() as usize;
+            assert_eq!(
+                input.get(at..at + val.len()),
+                Some(val.as_bytes()),
+                "text is not the input at its offset"
+            );
+        }
         let len = val.len();
         self.record(
             ctx,
@@ -184,25 +216,22 @@ impl<const N: usize> Handler for Recorder<'_, N> {
 }
 
 /// Stands in for `parser::number_value` under Kani, where float parsing is
-/// too large to check. Deterministic in `text`, so harnesses that compare
-/// two runs see the same value for the same token. For the K3 parser
-/// harnesses.
+/// too large to check. The state-machine harnesses only need a value that
+/// the parser and the reference both get for the same token, so it depends
+/// on the kind and the length of the text: no loop for Kani to unroll.
 #[cfg(kani)]
 #[allow(dead_code)] // Only named by `kani::stub`.
-fn stub_number_value(
+pub(crate) fn stub_number_value(
     kind: crate::lexer::Token,
     text: &str,
     _offset: u64,
 ) -> Result<crate::parser::Number, ParseError> {
     use crate::parser::Number;
-    let mut hash = 0u64;
-    for &b in text.as_bytes() {
-        hash = hash.wrapping_mul(31).wrapping_add(u64::from(b));
-    }
+    let len = text.len() as u64;
     Ok(if kind == crate::lexer::Token::Int {
-        Number::Int(hash as i64)
+        Number::Int(len as i64)
     } else {
-        Number::Double(f64::from_bits(hash))
+        Number::Double(f64::from_bits(len))
     })
 }
 

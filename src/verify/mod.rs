@@ -32,6 +32,9 @@ mod decode;
 mod lexer;
 mod parser;
 mod ref_lexer;
+mod reference;
+mod state_machine;
+mod tokens;
 
 use crate::parser::ParseError;
 use std::io::{BufRead, Read};
@@ -239,13 +242,31 @@ pub(crate) fn same_result(a: &Result<(), ParseError>, b: &Result<(), ParseError>
 /// Stands in for `std::fmt::format` under Kani: building error messages
 /// dominates solver time, and harnesses compare errors by variant and
 /// offset only (`same_error`), never by message.
-///
-/// No harness needs it yet; the K3 parser harnesses will, together with
-/// `parser::stub_number_value`.
 #[cfg(kani)]
 #[allow(dead_code)] // Only named by `kani::stub`.
 pub(crate) fn stub_format(_args: std::fmt::Arguments<'_>) -> String {
-    String::new()
+    // Not `String::new()`: Kani 0.68 models the `String::new()` returned
+    // from a stub with capacity 1 and a dangling pointer, so dropping it
+    // fails Kani's `__rust_dealloc` checks.
+    String::from("e")
+}
+
+/// Stands in for `std::str::from_utf8` in harnesses whose token bytes are
+/// all ASCII (`tokens::canonical`), where checking them only costs Kani
+/// time. Wrong for any other input, so only those harnesses use it.
+#[cfg(kani)]
+#[allow(dead_code)] // Only named by `kani::stub`.
+pub(crate) fn stub_from_utf8_ascii(v: &[u8]) -> Result<&str, std::str::Utf8Error> {
+    // SAFETY: only used where every input is ASCII, see above.
+    Ok(unsafe { std::str::from_utf8_unchecked(v) })
+}
+
+/// `stub_from_utf8_ascii` for `as_utf8`.
+#[cfg(kani)]
+#[allow(dead_code)] // Only named by `kani::stub`.
+pub(crate) fn stub_as_utf8_ascii(v: &[u8]) -> Option<&str> {
+    // SAFETY: as for `stub_from_utf8_ascii`.
+    Some(unsafe { std::str::from_utf8_unchecked(v) })
 }
 
 #[cfg(test)]

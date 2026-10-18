@@ -60,14 +60,17 @@ impl<'a, H: Handler> Parser<'a, H> {
     ///      Reader returns an error.
     pub fn parse<B: BufRead + ?Sized>(&mut self, read: &mut B) -> Result<(), ParseError> {
         let mut lexer = StreamLexer::new(read, self.max_token_len, self.offset);
-        let result = self.parse_tokens(&mut lexer);
+        let result = self.parse_source(&mut lexer);
         self.offset = lexer.offset();
         result
     }
 
-    fn parse_tokens<B: BufRead + ?Sized>(
+    /// The parser state machine over any source of tokens. `parse` feeds it
+    /// a `StreamLexer`; the Kani harnesses feed it token sequences directly,
+    /// since Kani cannot get through the lexer.
+    pub(crate) fn parse_source<S: TokenSource + ?Sized>(
         &mut self,
-        lexer: &mut StreamLexer<'_, B>,
+        lexer: &mut S,
     ) -> Result<(), ParseError> {
         let context = &mut self.context;
         let mut last_offset = lexer.offset();
@@ -76,7 +79,7 @@ impl<'a, H: Handler> Parser<'a, H> {
             context.parser_status(),
             ParserStatus::ParseComplete | ParserStatus::LexicalError
         ) {
-            let (kind, bytes, offset) = match lexer.next()? {
+            let (kind, bytes, offset) = match lexer.next_token()? {
                 Lexed::Token {
                     kind,
                     bytes,
@@ -274,6 +277,25 @@ impl<'a, H: Handler> Parser<'a, H> {
         }
 
         Ok(())
+    }
+}
+
+/// Where `Parser::parse_source` gets its tokens.
+pub(crate) trait TokenSource {
+    /// The next token, or `Eof`.
+    fn next_token(&mut self) -> Result<Lexed<'_>, ParseError>;
+
+    /// Absolute offset of the first byte not yet returned as a token.
+    fn offset(&self) -> u64;
+}
+
+impl<R: BufRead + ?Sized> TokenSource for StreamLexer<'_, R> {
+    fn next_token(&mut self) -> Result<Lexed<'_>, ParseError> {
+        self.next()
+    }
+
+    fn offset(&self) -> u64 {
+        StreamLexer::offset(self)
     }
 }
 
