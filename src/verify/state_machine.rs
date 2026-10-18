@@ -161,7 +161,7 @@ mod context_stack {
 
 /// Kani: number of tokens. See "Bounds" in `plans/04-kani-bolero.md`.
 #[cfg(kani)]
-const TOKEN_BOUND: usize = 4;
+const TOKEN_BOUND: usize = 3;
 
 /// Calls `f` on any sequence of up to `TOKEN_BOUND` tokens, ending at
 /// `Eof` or at a lexer error. The tokens have their `canonical` bytes, all
@@ -212,7 +212,7 @@ macro_rules! harness {
         #[cfg_attr(
             kani,
             kani::proof,
-            kani::unwind(6),
+            kani::unwind(5),
             kani::stub(crate::parser::number_value, super::parser::stub_number_value),
             kani::stub(std::fmt::format, super::stub_format),
     kani::stub(std::str::from_utf8, super::stub_from_utf8_ascii),
@@ -277,7 +277,7 @@ harness!(
 
 #[cfg(kani)]
 #[kani::proof]
-#[kani::unwind(6)]
+#[kani::unwind(5)]
 #[kani::stub(crate::parser::number_value, super::parser::stub_number_value)]
 #[kani::stub(std::fmt::format, super::stub_format)]
 #[kani::stub(std::str::from_utf8, super::stub_from_utf8_ascii)]
@@ -485,27 +485,28 @@ mod tests {
         );
     }
 
-    /// The space the Kani proofs search, enumerated: every sequence of up
-    /// to `KANI_TOKENS` canonical tokens, ending at `Eof` or an error, with
-    /// the real `number_value` and UTF-8 checks instead of Kani's stubs.
+    /// The space the Kani proofs search, enumerated and extended: every
+    /// sequence of up to `ENUM_TOKENS` canonical tokens (Kani stops at
+    /// `TOKEN_BOUND`), ending at `Eof` or an error, with the real
+    /// `number_value` and UTF-8 checks instead of Kani's stubs.
     #[test]
     fn exhaustive_token_sequences() {
-        const KANI_TOKENS: u32 = 4;
+        const ENUM_TOKENS: u32 = 6;
         use super::super::tokens::kind_from_byte;
-        for len in 0..=KANI_TOKENS {
+        for len in 0..=ENUM_TOKENS {
             for code in 0..12usize.pow(len) {
                 let kinds: Vec<Token> = (0..len)
                     .map(|i| kind_from_byte((code / 12usize.pow(i) % 12) as u8))
                     .collect();
                 for eof in [true, false] {
                     token_case(&kinds, eof, |case| {
-                        check_never_panics::<4>(case);
-                        check_context_invariants::<4>(case);
-                        check_accepts_only_valid_json::<4>(case);
-                        check_accepts_all_valid_json::<4>(case);
-                        check_events_match_reference::<4>(case);
+                        check_never_panics::<6>(case);
+                        check_context_invariants::<6>(case);
+                        check_accepts_only_valid_json::<6>(case);
+                        check_accepts_all_valid_json::<6>(case);
+                        check_events_match_reference::<6>(case);
                         for abort_at in 0..kinds.len() {
-                            check_no_callback_after_abort::<4>(case, abort_at);
+                            check_no_callback_after_abort::<6>(case, abort_at);
                         }
                     });
                 }

@@ -110,7 +110,7 @@ Concrete playback is how a failing proof turns into a regular `#[test]`: every K
 
 ### Bounds
 
-Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac (`cargo kani --tests -p yajlish@0.5.0 -Z stubbing`). K1's 12 harnesses take about 9 minutes and K3's six about 10; all 18 in one run took 19 minutes after K3. After K3b the stricter parser has more branches and the state-machine proofs take 3–4 minutes each at 4 tokens (the unchanged K1 harnesses also ran about 20% slower in that run, so some of it is the machine). The bounds are much smaller than the starting points this table used to list; the reasons are below the table.
+Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac (`cargo kani --tests -p yajlish@0.5.0 -Z stubbing`). K1's 12 harnesses take about 9 minutes and K3's six about 10; all 18 in one run took 19 minutes after K3. K3b's stricter parser has more branches: at 4 tokens the state-machine proofs took 173–257 s (K3: 59–129 s), so K3b lowered them to 3 tokens and raised `exhaustive_token_sequences`, which runs the same checks on the real code without stubs, from 4 to 6 tokens (25 s). The 3-token times in the table were measured on battery in macOS Low Power Mode, where the unchanged `complete_number_is_prefix` takes 40 s instead of 35 s; expect them about 15% lower on AC. Stubbing out the formatting in `parser::unexpected` made no difference. The bounds are much smaller than the starting points this table used to list; the reasons are below the table.
 
 | Harness | Kani input | Unwind | Time | Rest of the bound covered by |
 |---|---|---|---|---|
@@ -126,12 +126,12 @@ Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac (`
 | `decode_never_panics` | exactly 4 bytes | 6 | 121 s | `exhaustive_short_decode_inputs`: every byte string ≤ 3 |
 | `borrowed_iff_no_escape` | exactly 4 bytes | 6 | 123 s | same |
 | `lexer_and_decoder_agree` | exactly 4 bytes, quoted | 6 | 152 s | same, real logos |
-| `parser_never_panics` | ≤ 4 tokens, `Eof` or error | 6 | 173 s (K3: 59 s) | `exhaustive_token_sequences` (the same space, without the stubs); bytes: `exhaustive_short_inputs`, Bolero |
-| `no_callback_after_abort` | ≤ 4 tokens, abort at any event | 6 | 198 s (K3: 60 s) | same |
-| `accepts_all_valid_json` | ≤ 4 tokens | 6 | 245 s (K3: 113 s) | same, plus `generated_json_is_accepted` (Bolero, random documents) |
-| `events_match_reference` | ≤ 4 tokens | 6 | 257 s (K3: 118 s) | same |
-| `context_invariants_hold` | ≤ 4 tokens | 6 | 255 s | `exhaustive_token_sequences`, `exhaustive_short_inputs`, Bolero. Was `should_panic` (118 s) until K3b |
-| `accepts_only_valid_json` | ≤ 4 tokens | 6 | 245 s | same. Was `should_panic` (129 s) until K3b |
+| `parser_never_panics` | ≤ 3 tokens, `Eof` or error | 5 | 110 s | `exhaustive_token_sequences`: every sequence of ≤ 6 tokens, without the stubs; bytes: `exhaustive_short_inputs`, Bolero |
+| `no_callback_after_abort` | ≤ 3 tokens, abort at any event | 5 | 113 s | same |
+| `accepts_all_valid_json` | ≤ 3 tokens | 5 | 162 s | same, plus `generated_json_is_accepted` (Bolero, random documents) |
+| `events_match_reference` | ≤ 3 tokens | 5 | 159 s | same |
+| `context_invariants_hold` | ≤ 3 tokens | 5 | 153 s | `exhaustive_token_sequences`, `exhaustive_short_inputs`, Bolero. Was `should_panic` (118 s) until K3b |
+| `accepts_only_valid_json` | ≤ 3 tokens | 5 | 160 s | same. Was `should_panic` (129 s) until K3b |
 | `chunking_is_invisible`, `offsets_are_monotone`, `max_token_len_is_enforced`, `chunked_parse_is_invisible` | not under Kani | | > 10 min at 2 bytes | `exhaustive_short_stream_inputs` / `exhaustive_short_parse_inputs`: every byte string ≤ 2 bytes and every string ≤ 4 bytes over `ALPHABET`, every split, real logos; Bolero with chunk-size lists |
 
 What the measurements showed:
@@ -139,7 +139,7 @@ What the measurements showed:
 - **Symbolic lengths are the main cost.** With `len` nondeterministic, every loop over the input (logos's states, UTF-8 validation, `decode_str`, `hex4`) is unrolled to the unwind bound on every path. Harnesses therefore run Kani on a concrete length (`for_each_prefix` for the cheap ones, exactly `N` bytes via `for_each_input` for `decode_str`) and enumerate the shorter inputs in ordinary `exhaustive_*` tests. Tight unwind bounds matter too: `complete_number_is_prefix` went from 142 s to 38 s going from unwind 10 to 6. Unwinding assertions stay on, so a bound that is too small fails rather than passing silently.
 - **`decode_str` is expensive per byte.** A single 4-byte input takes about 2 minutes, almost all in CBMC's simplifier on the `String`/`Cow` heap objects. The plan's 10 bytes is out of reach; 4 bytes reaches a two-character escape and a two-byte UTF-8 character but not `\uXXXX`, which `every_surrogate_pair_decodes` covers by enumeration.
 - **`StreamLexer` and `Parser` are out of reach entirely.** Even two symbolic bytes, with the lexer stubbed and `format` stubbed, did not finish in 10 minutes (three bytes: not in 20). K2's "green at bound 6" is not achievable with Kani, so K2's two properties are proved by enumeration instead, which also runs the real logos. This matters for K3 (see "Open questions").
-- **The state machine fits at 4 tokens, behind `parse_source`** (K3). Even at 2 tokens it first timed out, three ways: UTF-8 validation of token bytes chosen through a symbolic pointer (symex 139 s), `format!` in error paths, and `Context`'s `VecDeque`, whose ring-buffer indices go symbolic once paths merge so that CBMC's array encoding never finishes (`--arrays-uf-always`/`-never` did not help). With the stubs below, 2 tokens takes 31 s and 4 tokens 60–125 s; 5 tokens timed out at 10 minutes.
+- **The state machine fits at 4 tokens, behind `parse_source`** (K3; 3 since K3b, see above). Even at 2 tokens it first timed out, three ways: UTF-8 validation of token bytes chosen through a symbolic pointer (symex 139 s), `format!` in error paths, and `Context`'s `VecDeque`, whose ring-buffer indices go symbolic once paths merge so that CBMC's array encoding never finishes (`--arrays-uf-always`/`-never` did not help). With the stubs below, 2 tokens takes 31 s and 4 tokens 60–125 s; 5 tokens timed out at 10 minutes.
 - **std's `from_utf8` is slow under Kani** (it reads aligned words found with `align_offset`), so harnesses use `verify::as_utf8`, a byte-at-a-time check that `utf8_check_matches_std` tests against std on every input up to 3 bytes and every 4-byte input built from the table's range edges.
 
 ### Stubs
@@ -181,7 +181,7 @@ Engine: **K** = Kani proof, **B** = Bolero (test + fuzz), **K+B** = shared body,
 
 ### Core crate: parser state machine (`src/parser.rs`, `src/common.rs`)
 
-**K3 as built.** Kani cannot run `Parser::parse` (see "Bounds"), so K3 refactored it (decided 2026-10-17, open question 2): the state machine is now `Parser::parse_source<S: TokenSource>`, and `parse` is `parse_source` over a `StreamLexer`, with no behaviour change (every existing test, gold file and `N_ALLOWLIST` entry is unchanged). The Kani harnesses feed `parse_source` a `TokenSeq` of up to 4 nondeterministic tokens, each with a canonical spelling, ending at `Eof` or at a lexer error. The Bolero versions lex random bytes with the real lexer into the same `TokenSeq` (`tokens::lex_all`), which replays exactly what `parse` sees, since the parser stops at the first lexer error either way. Each property is one `check_*` function in `src/verify/state_machine.rs` that all three engines call.
+**K3 as built.** Kani cannot run `Parser::parse` (see "Bounds"), so K3 refactored it (decided 2026-10-17, open question 2): the state machine is now `Parser::parse_source<S: TokenSource>`, and `parse` is `parse_source` over a `StreamLexer`, with no behaviour change (every existing test, gold file and `N_ALLOWLIST` entry is unchanged). The Kani harnesses feed `parse_source` a `TokenSeq` of up to 4 (since K3b: 3) nondeterministic tokens, each with a canonical spelling, ending at `Eof` or at a lexer error. The Bolero versions lex random bytes with the real lexer into the same `TokenSeq` (`tokens::lex_all`), which replays exactly what `parse` sees, since the parser stops at the first lexer error either way. Each property is one `check_*` function in `src/verify/state_machine.rs` that all three engines call.
 
 All use `Recorder`, which asserts on every callback:
 
