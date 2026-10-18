@@ -15,7 +15,7 @@ Kani is **not** used for end-to-end RFC 8259 conformance over arbitrary document
 1. Kani proofs for every pure subroutine listed under "Harnesses" below, each finishing in under ~2 minutes in CI.
 2. A Kani proof that the parser never panics and keeps its `Context` invariants on every byte string up to a fixed length (target 8, see "Bounds").
 3. A Kani proof that streaming is chunk-independent: splitting the input at any point gives the same tokens and events as not splitting it.
-4. A Kani soundness harness ("accepted only if valid") against a small reference recognizer. It **fails today** on the cases in `N_ALLOWLIST`; it becomes the regression oracle for the parser-hardening fix.
+4. A Kani soundness harness ("accepted only if valid") against a small reference recognizer. It failed on the cases in `N_ALLOWLIST` until the parser hardening (K3b), and is now its regression oracle.
 5. Bolero fuzz targets for the same properties plus the differential properties that are too big for Kani, seeded from the existing fixtures and JSONTestSuite.
 6. CI: Bolero harnesses run as ordinary tests on every PR; Kani runs on every PR; fuzzing runs time-boxed on a schedule.
 
@@ -110,7 +110,7 @@ Concrete playback is how a failing proof turns into a regular `#[test]`: every K
 
 ### Bounds
 
-Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac (`cargo kani --tests -p yajlish@0.5.0 -Z stubbing`). K1's 12 harnesses take about 9 minutes and K3's six about 10; all 18 in one run took 19 minutes. The K3 times are from that run. The bounds are much smaller than the starting points this table used to list; the reasons are below the table.
+Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac (`cargo kani --tests -p yajlish@0.5.0 -Z stubbing`). K1's 12 harnesses take about 9 minutes and K3's six about 10; all 18 in one run took 19 minutes after K3. After K3b the stricter parser has more branches and the state-machine proofs take 3–4 minutes each at 4 tokens (the unchanged K1 harnesses also ran about 20% slower in that run, so some of it is the machine). The bounds are much smaller than the starting points this table used to list; the reasons are below the table.
 
 | Harness | Kani input | Unwind | Time | Rest of the bound covered by |
 |---|---|---|---|---|
@@ -126,12 +126,12 @@ Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac (`
 | `decode_never_panics` | exactly 4 bytes | 6 | 121 s | `exhaustive_short_decode_inputs`: every byte string ≤ 3 |
 | `borrowed_iff_no_escape` | exactly 4 bytes | 6 | 123 s | same |
 | `lexer_and_decoder_agree` | exactly 4 bytes, quoted | 6 | 152 s | same, real logos |
-| `parser_never_panics` | ≤ 4 tokens, `Eof` or error | 6 | 59 s | `exhaustive_token_sequences` (the same space, without the stubs); bytes: `exhaustive_short_inputs`, Bolero |
-| `no_callback_after_abort` | ≤ 4 tokens, abort at any event | 6 | 60 s | same |
-| `accepts_all_valid_json` | ≤ 4 tokens | 6 | 113 s | same, plus `generated_json_is_accepted` (Bolero, random documents) |
-| `events_match_reference` | ≤ 4 tokens | 6 | 118 s | same |
-| `context_invariants_hold` | ≤ 4 tokens, `should_panic` | 6 | 118 s | fails today, see the parser table |
-| `accepts_only_valid_json` | ≤ 4 tokens, `should_panic` | 6 | 129 s | fails today, see the parser table |
+| `parser_never_panics` | ≤ 4 tokens, `Eof` or error | 6 | 173 s (K3: 59 s) | `exhaustive_token_sequences` (the same space, without the stubs); bytes: `exhaustive_short_inputs`, Bolero |
+| `no_callback_after_abort` | ≤ 4 tokens, abort at any event | 6 | 198 s (K3: 60 s) | same |
+| `accepts_all_valid_json` | ≤ 4 tokens | 6 | 245 s (K3: 113 s) | same, plus `generated_json_is_accepted` (Bolero, random documents) |
+| `events_match_reference` | ≤ 4 tokens | 6 | 257 s (K3: 118 s) | same |
+| `context_invariants_hold` | ≤ 4 tokens | 6 | 255 s | `exhaustive_token_sequences`, `exhaustive_short_inputs`, Bolero. Was `should_panic` (118 s) until K3b |
+| `accepts_only_valid_json` | ≤ 4 tokens | 6 | 245 s | same. Was `should_panic` (129 s) until K3b |
 | `chunking_is_invisible`, `offsets_are_monotone`, `max_token_len_is_enforced`, `chunked_parse_is_invisible` | not under Kani | | > 10 min at 2 bytes | `exhaustive_short_stream_inputs` / `exhaustive_short_parse_inputs`: every byte string ≤ 2 bytes and every string ≤ 4 bytes over `ALPHABET`, every split, real logos; Bolero with chunk-size lists |
 
 What the measurements showed:
@@ -192,9 +192,9 @@ All use `Recorder`, which asserts on every callback:
 | Name | Engine | Property | Today |
 |---|---|---|---|
 | `parser_never_panics` | K+B | Any token sequence ≤ 4 (Kani) or input ≤ 8 bytes (Bolero), through `parse_source` then `finish_parse`. Includes the `dec_braces`/`dec_brackets` subtractions (`src/common.rs:151`, `:159`), which must never underflow. | **pass** |
-| `context_invariants_hold` | K+B | The `Recorder` assertions above. | **fails** (K3 measured): on `[}`, `handle_end_map` is called, the context does not pop, and parsing continues, so the next callback sees the array still open after the handler saw it closed. Kani: `should_panic`, playback `[ "s" } {`. Bolero version ignored until K3b. |
-| `no_callback_after_abort` | K | With a `Recorder` that returns `Abort` at a nondeterministic event index, no callback follows it and `parse` returns. | **pass**. `parse` does not always return `Ok` after an `Abort`: on `]` the parser calls `handle_end_array` before checking for a matching `[`, so the abort is followed by `MalformedJson`. Not checked; a K3b question. |
-| `accepts_only_valid_json` | K+B | If `parse` and `finish_parse` both return `Ok`, the reference recognizer accepts the same token sequence. | **fails**, by design. Kani: `should_panic`, playback: the empty sequence. Six classes, one ignored test each in `state_machine::tests`, with the `N_ALLOWLIST` entries each explains: empty document (`""`, `" "`); a `}` that closes nothing or an array (`}`, `{}}`, `[}]`: `LexicalError` overwritten); `:` outside `MapSep` ignored (`:`, `{"a"::1}`, `{:"b"}`); `[`/`{` after a value (`1[]`, `[][]`, `[3[4]]`); trailing comma (`[1,]`, `{"a":1,}`); key without value (`{"a"}`). Found by enumerating every canonical sequence of ≤ 4 tokens; Kani's playback finds one at a time. |
+| `context_invariants_hold` | K+B | The `Recorder` assertions above. | **pass since K3b.** In K3 it failed: on `[}`, `handle_end_map` was called, the context did not pop, and parsing continued, so the next callback saw the array still open after the handler saw it closed (Kani playback `[ "s" } {`, kept as `kani_playback_context_invariants_hold`). |
+| `no_callback_after_abort` | K | With a `Recorder` that returns `Abort` at a nondeterministic event index, no callback follows it and `parse` returns `Ok`. | **pass**. The `Ok` part holds since K3b (open question 3); in K3, `]` called `handle_end_array` before checking for a matching `[`, so an abort there was followed by `MalformedJson`, and the check left `Ok` out. |
+| `accepts_only_valid_json` | K+B | If `parse` and `finish_parse` both return `Ok`, the reference recognizer accepts the same token sequence. | **pass since K3b.** In K3 it failed, by design: Kani playback: the empty sequence. Six classes, one ignored test each in `state_machine::tests`, with the `N_ALLOWLIST` entries each explains: empty document (`""`, `" "`); a `}` that closes nothing or an array (`}`, `{}}`, `[}]`: `LexicalError` overwritten); `:` outside `MapSep` ignored (`:`, `{"a"::1}`, `{:"b"}`); `[`/`{` after a value (`1[]`, `[][]`, `[3[4]]`); trailing comma (`[1,]`, `{"a":1,}`); key without value (`{"a"}`). Found by enumerating every canonical sequence of ≤ 4 tokens; Kani's playback finds one at a time. All of these tests pass now. |
 | `accepts_all_valid_json` | K+B | The converse: every token sequence the reference accepts is accepted by the parser. Bolero also runs `generated_json_is_accepted` on random documents with random whitespace. | **pass** |
 | `events_match_reference` | K+B | For input the reference accepts, the parser's events equal the reference's. | **pass** |
 | `chunked_parse_is_invisible` | B + exhaustive | Same as `chunking_is_invisible`, at the event level through `Parser`. Exhaustive form of `tests/test_split_points.rs`. | pass |
@@ -204,9 +204,11 @@ The reference recognizer (`src/verify/reference.rs`) is an explicit-stack pushdo
 
 `accepts_only_valid_json` is the plan's main payoff. It lands in K3 marked `#[cfg_attr(kani, kani::should_panic)]`, with each counterexample committed as a failing-then-ignored unit test. Fixing the parser so it passes is the parser-hardening task from Plan 1 and is a behaviour change, so it is a separate PR (K3b), which also empties `N_ALLOWLIST`. **Default picked, flag if you'd rather fold the fix into this plan.**
 
+*K3b as built (2026-10-18).* `parse_source` checks each token against the status and, for `]`/`}`, against the container the status implies, before calling the handler; a token out of place is `MalformedJson` at its offset with no callback (open question 3, "check first"). End of input only marks the document complete when a whole value was read, so `finish_parse` rejects empty input, and a second `parse` call continues an unfinished document from the next token, which it did not before (the first reader's end used to end the document). The 11 K3 tests run (not ignored), neither harness is `should_panic`, `no_callback_after_abort` requires `Ok`, and `N_ALLOWLIST` is empty. Error offsets in `tests/test_parser.rs` are unchanged.
+
 #### Tokens span `parse` calls (decided 2026-10-17)
 
-A token cut off at the end of one `parse` call continues in the next: `parse(b"[1")` then `parse(b"2]")` must deliver one `handle_int(12)`. Today each `parse` builds a new `StreamLexer` (`src/parser.rs:62`), which treats the end of its reader as the end of the stream, so it emits `1` and then `2`.
+A token cut off at the end of one `parse` call continues in the next: `parse(b"[1")` then `parse(b"2]")` must deliver one `handle_int(12)`. Today each `parse` builds a new `StreamLexer` (`src/parser.rs:62`), which treats the end of its reader as the end of the stream, so it emits `1` and then `2`. (Since K3b, that is. Before it, the first call's end of input ended the document, so the second call read nothing.)
 
 The fix (K3c) keeps the lexer's buffer in `Parser` between calls instead of in a per-call `StreamLexer`. The end of one reader then means "no more bytes for now", and a token that may still extend stays buffered. Only `finish_parse` marks the true end of the stream and flushes it. One consequence callers will see: a document that is a bare top-level number (`12`) only produces its event from `finish_parse`, because until then a later call could append digits. Strings, keywords and containers are unaffected since they end in a byte that can't extend. That changes the documented contract of `parse` and `finish_parse`, so the changelog and the `Parser` docs say so.
 
@@ -237,7 +239,7 @@ The fix (K3c) keeps the lexer's buffer in `Parser` between calls instead of in a
 
 - Seed every Bolero target that takes bytes from `tests/valid_json_fixtures/`, `tests/json_test_suite/test_parsing/` and `yajlish-ndjson`'s fixtures, copied into `__fuzz__/<target>/corpus/` by `scripts/seed-corpora.sh`.
 - New CI jobs in `.github/workflows/ci.yaml`:
-  - `kani` (every PR): `model-checking/kani-github-action@v1`, running `cargo kani --tests -p yajlish@0.5.0 -Z stubbing` (more `-p` as K4/K5 add crates; about 20 minutes after K3). Harnesses marked `should_panic` keep it green until K3b.
+  - `kani` (every PR): `model-checking/kani-github-action@v1`, running `cargo kani --tests -p yajlish@0.5.0 -Z stubbing` (more `-p` as K4/K5 add crates; about 20 minutes after K3). Since K3b no harness is `should_panic`.
   - `fuzz` (nightly schedule, not PRs): nightly toolchain, `cargo install cargo-bolero`, 5 minutes per target with libFuzzer, uploading any crash as an artifact.
 - The existing `cargo test --all` job runs every Bolero harness with random inputs at no extra setup cost.
 
@@ -249,7 +251,7 @@ The fix (K3c) keeps the lexer's buffer in `Parser` between calls instead of in a
 | K1 | Lexer and `decode_str` proofs | All lexer/decoder rows green under Kani and as tests |
 | K2 | Chunk independence (lexer and parser levels) | `chunking_is_invisible`, `chunked_parse_is_invisible` green at bound 6. **Done differently:** Kani cannot run `StreamLexer`; both are exhaustive up to 2 bytes (all bytes) and 4 bytes (`ALPHABET`), plus Bolero |
 | K3 | Parser state machine, reference recognizer, `accepts_only_valid_json` as `should_panic` | Reference passes JSONTestSuite with no allowlist; counterexamples committed as unit tests. **Done** at 4 tokens, through the `parse_source` refactor; `context_invariants_hold` also lands as `should_panic` |
-| K3b | Parser hardening (separate PR, behaviour change) | `accepts_only_valid_json` passes without `should_panic`; `N_ALLOWLIST` is empty |
+| K3b | Parser hardening (separate PR, behaviour change) | `accepts_only_valid_json` passes without `should_panic`; `N_ALLOWLIST` is empty. **Done**; `context_invariants_hold` passes too |
 | K3c | Tokens span `parse` calls: lexer buffer moves into `Parser`, `finish_parse` flushes (separate PR, behaviour change) | `split_across_parse_calls` passes; `Parser` docs and changelog updated |
 | K4 | ndjson and selector harnesses | Rows green |
 | K5 | Schema `num`/`value` proofs, runtime harness, macro name fuzzing | Rows green |
@@ -261,4 +263,4 @@ K0–K2 can be one PR. K3, K3b, K3c, K4 and K5 are separate PRs.
 
 1. **Kani bound for the parser.** 8 bytes reaches `{"a":1}` and `[[[]]]` but not a surrogate pair inside a document. If K0's timings allow 12, that is worth the extra CI minutes. *Answered by K0–K2's measurements: no symbolic parser input fits at all, see 2.*
 2. ~~**K3 cannot run `Parser::parse` under Kani.**~~ *Decided 2026-10-17: refactor. Done in K3 as `TokenSource` and `Parser::parse_source`, see the parser section.*
-3. **What should K3b do about `Abort` on a malformed token?** Today a handler can `Abort` on `]` or `}` that the parser then rejects, so the caller sees the abort and an error. Validating before the callback (which K3b's hardening does anyway for `context_invariants_hold`) would make `parse` return `Ok` after every `Abort`.
+3. ~~**What should K3b do about `Abort` on a malformed token?**~~ *Decided 2026-10-18: check first. The parser validates a token before calling the handler, so a mismatched `]` or `}` is an error with no callback, and an `Abort` always means `parse` returns `Ok`. Done in K3b.*

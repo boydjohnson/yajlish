@@ -155,6 +155,8 @@ M1–M3 can be one PR; M4 and M5 are separate PRs.
 
 These come from reading `src/parser.rs`, not from running it, so each should get a failing test first.
 
+*Done in Plan 4, K3b (2026-10-18): all but the last are fixed, with failing-then-passing tests in `src/verify/state_machine.rs`, and the JSONTestSuite allowlist is empty. The last is kept on purpose: an `Abort` still returns `Ok(())`, and now it always does (see Plan 4, open question 3).*
+
 - `]` and `}` don't check the current state, so `[1,]` and `{"a":1,}` look accepted (trailing comma).
 - A `:` outside `MapSep` is silently ignored (`src/parser.rs:226`), so `{"a"::1}` looks accepted.
 - `handle_end_array` / `handle_end_map` are called before the closing bracket is checked against the enclosing stack (`src/parser.rs:61`, `:82`), so the handler sees an end event for `{]` before the error.

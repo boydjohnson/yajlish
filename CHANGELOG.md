@@ -12,6 +12,20 @@
   `offset()` and `message()` read them. `ParseError` is now exported.
 - **Breaking:** the `ndjson` feature is gone. The converter moved to the
   `yajlish-ndjson` crate: replace `yajlish::ndjson_handler::` with `yajlish_ndjson::`.
+- **Breaking:** the parser enforces the RFC 8259 grammar, not just the
+  tokens. These are now `MalformedJson` errors: an empty or whitespace-only
+  document, a `}` or `]` that closes nothing or the wrong container,
+  trailing commas (`[1,]`, `{"a":1,}`), a `:` anywhere but after a key, a
+  value directly after a value (`[1 2]`, `[][]`, two top-level documents),
+  and a key with no value (`{"a"}`). JSONTestSuite's `n_*` files are all
+  rejected now.
+- Each token is checked before the handler sees it, so handlers are only
+  called for a prefix of a valid document; a mismatched `}` or `]` no
+  longer reaches `handle_end_map`/`handle_end_array`. A handler that returns
+  `Status::Abort` always gets `Ok(())` from `parse`.
+- A document cut between tokens continues in the next `parse` call on the
+  same `Parser`; before, the end of the first reader ended the document.
+  `finish_parse` checks that exactly one complete value was read.
 - Reader errors are returned as `ParseError::ReadError` instead of looking like EOF.
 - No input can make the parser panic. Tokens are capped at 64 MiB by default
   (`Parser::with_max_token_len`).

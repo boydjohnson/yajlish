@@ -391,3 +391,17 @@ fn test_context_offsets() {
         .unwrap();
     assert_eq!(handler.0, vec![0, 1, 6, 7, 10, 14, 17, 22, 25]);
 }
+
+/// A document cut between tokens continues in the next `parse` call. Before
+/// the parser hardening, the end of the first reader marked the document
+/// complete and the second call read nothing. (A token cut in two is still
+/// lexed as two tokens; that is Plan 4's K3c.)
+#[test]
+fn test_document_continues_across_parse_calls() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser.parse(&mut &b"[1,"[..]).unwrap();
+    parser.parse(&mut &b" 2]"[..]).unwrap();
+    parser.finish_parse().unwrap();
+    assert_eq!(handler.0, vec![0, 1, 4, 5]);
+}

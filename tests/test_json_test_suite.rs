@@ -1,10 +1,9 @@
 //! Runs the vendored JSONTestSuite (`tests/json_test_suite/test_parsing`).
 //!
 //! - `y_*` must parse.
-//! - `n_*` must fail, except those in `N_ALLOWLIST`: parser-level problems
-//!   (trailing commas, misplaced colons, ...) that the parser hardening task
-//!   fixes. The list must only shrink; a listed file that starts failing
-//!   makes this test fail too, so the entry gets removed.
+//! - `n_*` must fail, except those in `N_ALLOWLIST`, which is empty. A
+//!   listed file that starts failing makes this test fail too, so the entry
+//!   gets removed.
 //! - `i_*` are implementation-defined. `I_ACCEPTED` records which ones we
 //!   accept, so a change in behaviour shows up here.
 
@@ -53,22 +52,10 @@ fn accepts(input: &[u8]) -> bool {
     parser.parse(&mut reader).is_ok() && parser.finish_parse().is_ok()
 }
 
-/// `n_*` files we currently accept. All are parser-level, not lexical: empty
-/// documents, trailing commas, a missing comma between values, a doubled
-/// colon, and closers that do not match.
-const N_ALLOWLIST: &[&str] = &[
-    "n_array_extra_comma.json",
-    "n_array_inner_array_no_comma.json",
-    "n_array_number_and_comma.json",
-    "n_object_double_colon.json",
-    "n_object_missing_key.json",
-    "n_object_trailing_comma.json",
-    "n_object_with_single_string.json",
-    "n_single_space.json",
-    "n_structure_double_array.json",
-    "n_structure_no_data.json",
-    "n_structure_object_followed_by_closing_object.json",
-];
+/// `n_*` files we accept. Empty since the parser hardening (Plan 4, K3b),
+/// and it should stay that way; the mechanism is kept so that a deliberate
+/// exception would be visible here.
+const N_ALLOWLIST: &[&str] = &[];
 
 /// `i_*` files we accept. Out-of-range numbers become `f64` (possibly
 /// infinite or zero); lone surrogate escapes are valid grammar and are left

@@ -81,20 +81,14 @@ pub(crate) type SeqToken<'a> = (Token, &'a [u8], u64);
 pub(crate) struct TokenSeq<'a> {
     tokens: &'a [SeqToken<'a>],
     end: &'a Result<(), ParseError>,
-    end_offset: u64,
     pos: usize,
 }
 
 impl<'a> TokenSeq<'a> {
-    pub(crate) fn new(
-        tokens: &'a [SeqToken<'a>],
-        end: &'a Result<(), ParseError>,
-        end_offset: u64,
-    ) -> Self {
+    pub(crate) fn new(tokens: &'a [SeqToken<'a>], end: &'a Result<(), ParseError>) -> Self {
         TokenSeq {
             tokens,
             end,
-            end_offset,
             pos: 0,
         }
     }
@@ -112,13 +106,6 @@ impl TokenSource for TokenSeq<'_> {
                 })
             }
             None => self.end.clone().map(|()| Lexed::Eof),
-        }
-    }
-
-    fn offset(&self) -> u64 {
-        match self.tokens.get(self.pos) {
-            Some(&(_, _, offset)) => offset,
-            None => self.end_offset,
         }
     }
 }

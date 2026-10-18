@@ -172,7 +172,7 @@ mod tests {
         if end.is_err() {
             return None;
         }
-        let mut seq = TokenSeq::new(&tokens, &end, input.len() as u64);
+        let mut seq = TokenSeq::new(&tokens, &end);
         let mut stack = vec![Enclosing::LeftBrace; tokens.len()];
         Some(accepts(&mut seq, &mut stack, |_, _| {}))
     }
@@ -209,7 +209,7 @@ mod tests {
     fn reference_events() {
         let input = br#"{"a":[1,true,{}],"b":null}"#;
         let (tokens, end) = lex_all(input);
-        let mut seq = TokenSeq::new(&tokens, &end, input.len() as u64);
+        let mut seq = TokenSeq::new(&tokens, &end);
         let mut stack = vec![Enclosing::LeftBrace; tokens.len()];
         let mut events = vec![];
         assert!(accepts(&mut seq, &mut stack, |e, at| events.push((e, at))));

@@ -34,14 +34,13 @@ pub(crate) struct Case<'a> {
     tokens: &'a [SeqToken<'a>],
     /// `Ok(())` if the sequence ends at `Eof`, else the lexer's error.
     end: &'a Result<(), ParseError>,
-    end_offset: u64,
     /// The bytes the tokens were lexed from, if any.
     input: Option<&'a [u8]>,
 }
 
 impl<'a> Case<'a> {
     fn seq(&self) -> TokenSeq<'a> {
-        TokenSeq::new(self.tokens, self.end, self.end_offset)
+        TokenSeq::new(self.tokens, self.end)
     }
 
     fn recorder<const N: usize>(&self, strict: bool) -> Recorder<'a, N> {
@@ -87,17 +86,19 @@ fn check_context_invariants<const N: usize>(case: &Case<'_>) {
 }
 
 /// After a callback returns `Abort`, no callback follows (the `Recorder`
-/// asserts that) and `parse_source` returns. It need not return `Ok`: on
-/// `]` the parser calls `handle_end_array` before it checks for a matching
-/// `[`, so an `Abort` there is followed by the `MalformedJson` error.
+/// asserts that) and `parse_source` returns `Ok`. Holds because the parser
+/// checks each token before calling the handler (K3b), so a handler never
+/// sees a token that is then rejected.
 fn check_no_callback_after_abort<const N: usize>(case: &Case<'_>, abort_at: usize) {
     let mut recorder = case.recorder::<N>(false).abort_at(abort_at);
     let mut parser = Parser::new(&mut recorder);
-    let _ = parser.parse_source(&mut case.seq());
+    let result = parser.parse_source(&mut case.seq());
+    if recorder.events().len() > abort_at {
+        assert!(result.is_ok(), "Abort must end the parse with Ok");
+    }
 }
 
-/// Accepted by the parser ⇒ accepted by the reference. Fails until the
-/// parser hardening (K3b).
+/// Accepted by the parser ⇒ accepted by the reference.
 fn check_accepts_only_valid_json<const N: usize>(case: &Case<'_>) {
     let (_, parsed) = case.parse::<N>(case.recorder(false));
     if parsed {
@@ -182,7 +183,6 @@ fn kani_case(f: impl FnOnce(&Case<'_>)) {
     f(&Case {
         tokens: &tokens[..len],
         end: &end,
-        end_offset: len as u64,
         input: None,
     });
 }
@@ -194,7 +194,6 @@ fn bytes_case(input: &[u8], f: impl FnOnce(&Case<'_>)) {
     f(&Case {
         tokens: &tokens,
         end: &end,
-        end_offset: input.len() as u64,
         input: Some(input),
     });
 }
@@ -262,77 +261,19 @@ harness!(
     check_events_match_reference
 );
 
-/// Fails today: on a `}` that closes nothing or an array, the parser calls
-/// `handle_end_map`, flags a `LexicalError`, then overwrites the status and
-/// carries on, so after `[}` the handler has seen the array closed while
-/// the context still has it open (`tests::invariants_after_mismatched_brace`).
-/// `should_panic` under Kani and ignored as a test until K3b.
-#[test]
-#[ignore = "fails until the parser hardening, K3b"]
-#[cfg_attr(
-    kani,
-    kani::proof,
-    kani::should_panic,
-    kani::unwind(6),
-    kani::stub(crate::parser::number_value, super::parser::stub_number_value),
-    kani::stub(std::fmt::format, super::stub_format),
-    kani::stub(std::str::from_utf8, super::stub_from_utf8_ascii),
-    kani::stub(super::as_utf8, super::stub_as_utf8_ascii),
-    kani::stub(crate::Context::add_enclosing, context_stack::add_enclosing),
-    kani::stub(crate::Context::last_enclosing, context_stack::last_enclosing),
-    kani::stub(
-        crate::Context::remove_last_enclosing,
-        context_stack::remove_last_enclosing
-    )
-)]
-fn context_invariants_hold() {
-    #[cfg(kani)]
-    kani_case(check_context_invariants::<TOKEN_BOUND>);
-    #[cfg(not(kani))]
-    bolero::check!()
-        .with_type::<([u8; BYTES_BOUND], u8)>()
-        .cloned()
-        .for_each(|(buf, len)| {
-            let input = &buf[..usize::from(len) % (BYTES_BOUND + 1)];
-            bytes_case(input, check_context_invariants::<BYTES_BOUND>);
-        });
-}
-
-/// Fails today, by design: the parser accepts some invalid token sequences
-/// (`N_ALLOWLIST` in `tests/test_json_test_suite.rs`). Under Kani it is
-/// `should_panic` until the parser hardening (K3b); the counterexamples are
-/// the ignored tests in `tests` below. The Bolero versions are ignored for
-/// the same reason.
-#[test]
-#[ignore = "fails until the parser hardening, K3b"]
-#[cfg_attr(
-    kani,
-    kani::proof,
-    kani::should_panic,
-    kani::unwind(6),
-    kani::stub(crate::parser::number_value, super::parser::stub_number_value),
-    kani::stub(std::fmt::format, super::stub_format),
-    kani::stub(std::str::from_utf8, super::stub_from_utf8_ascii),
-    kani::stub(super::as_utf8, super::stub_as_utf8_ascii),
-    kani::stub(crate::Context::add_enclosing, context_stack::add_enclosing),
-    kani::stub(crate::Context::last_enclosing, context_stack::last_enclosing),
-    kani::stub(
-        crate::Context::remove_last_enclosing,
-        context_stack::remove_last_enclosing
-    )
-)]
-fn accepts_only_valid_json() {
-    #[cfg(kani)]
-    kani_case(check_accepts_only_valid_json::<TOKEN_BOUND>);
-    #[cfg(not(kani))]
-    bolero::check!()
-        .with_type::<([u8; BYTES_BOUND], u8)>()
-        .cloned()
-        .for_each(|(buf, len)| {
-            let input = &buf[..usize::from(len) % (BYTES_BOUND + 1)];
-            bytes_case(input, check_accepts_only_valid_json::<BYTES_BOUND>);
-        });
-}
+// These two failed until K3b: the parser accepted invalid token sequences
+// (`tests::rejects_*`) and, on `[}`, called `handle_end_map` and carried on
+// (`tests::invariants_after_mismatched_brace`). Both were `should_panic`.
+harness!(
+    context_invariants_hold,
+    context_invariants_hold_fuzz,
+    check_context_invariants
+);
+harness!(
+    accepts_only_valid_json,
+    accepts_only_valid_json_fuzz,
+    check_accepts_only_valid_json
+);
 
 #[cfg(kani)]
 #[kani::proof]
@@ -439,16 +380,15 @@ mod tests {
     use super::*;
 
     /// The parser rejects `input`. Each test below is one class of
-    /// counterexample to `accepts_only_valid_json`, one per cause, with the
-    /// `N_ALLOWLIST` entries of `tests/test_json_test_suite.rs` it explains.
-    /// They fail until the parser hardening (K3b).
+    /// counterexample to `accepts_only_valid_json` that K3 found, one per
+    /// cause, with the JSONTestSuite files it explains (they were on
+    /// `N_ALLOWLIST` until K3b fixed them).
     fn rejects(input: &[u8]) {
         bytes_case(input, check_accepts_only_valid_json::<16>);
     }
 
     /// `n_structure_no_data`, `n_single_space`.
     #[test]
-    #[ignore = "fails until K3b"]
     fn rejects_empty_document() {
         rejects(b"");
         rejects(b" ");
@@ -457,7 +397,6 @@ mod tests {
     /// A `}` that closes nothing flags `LexicalError`, and the status is
     /// then overwritten. `n_structure_object_followed_by_closing_object`.
     #[test]
-    #[ignore = "fails until K3b"]
     fn rejects_unmatched_closing_brace() {
         rejects(b"}");
         rejects(b"{}}");
@@ -467,7 +406,6 @@ mod tests {
     /// `:` anywhere but after a key is ignored. `n_object_double_colon`,
     /// `n_object_missing_key`.
     #[test]
-    #[ignore = "fails until K3b"]
     fn rejects_misplaced_colon() {
         rejects(b":");
         rejects(br#"{"a"::1}"#);
@@ -477,7 +415,6 @@ mod tests {
     /// `[` and `{` do not check the status, so a value can follow a value.
     /// `n_structure_double_array`, `n_array_inner_array_no_comma`.
     #[test]
-    #[ignore = "fails until K3b"]
     fn rejects_value_after_value() {
         rejects(b"1[]");
         rejects(b"[][]");
@@ -487,7 +424,6 @@ mod tests {
     /// `n_array_extra_comma`, `n_array_number_and_comma`,
     /// `n_object_trailing_comma`.
     #[test]
-    #[ignore = "fails until K3b"]
     fn rejects_trailing_comma() {
         rejects(b"[1,]");
         rejects(br#"{"a":1,}"#);
@@ -495,14 +431,12 @@ mod tests {
 
     /// A key with no `:` or value. `n_object_with_single_string`.
     #[test]
-    #[ignore = "fails until K3b"]
     fn rejects_key_without_value() {
         rejects(br#"{"a"}"#);
     }
 
     /// `context_invariants_hold`'s counterexample.
     #[test]
-    #[ignore = "fails until K3b"]
     fn invariants_after_mismatched_brace() {
         bytes_case(b"[}]", check_context_invariants::<8>);
     }
@@ -524,7 +458,6 @@ mod tests {
         f(&Case {
             tokens: &tokens,
             end: &end,
-            end_offset: kinds.len() as u64,
             input: None,
         });
     }
@@ -532,7 +465,6 @@ mod tests {
     /// Kani's counterexample to `accepts_only_valid_json`, from
     /// `--concrete-playback`: no tokens, then `Eof`.
     #[test]
-    #[ignore = "fails until K3b"]
     fn kani_playback_accepts_only_valid_json() {
         token_case(&[], true, check_accepts_only_valid_json::<4>);
     }
@@ -540,7 +472,6 @@ mod tests {
     /// Kani's counterexample to `context_invariants_hold`, from
     /// `--concrete-playback`: `[ "s" } {`, then `Eof`.
     #[test]
-    #[ignore = "fails until K3b"]
     fn kani_playback_context_invariants_hold() {
         token_case(
             &[
@@ -569,6 +500,8 @@ mod tests {
                 for eof in [true, false] {
                     token_case(&kinds, eof, |case| {
                         check_never_panics::<4>(case);
+                        check_context_invariants::<4>(case);
+                        check_accepts_only_valid_json::<4>(case);
                         check_accepts_all_valid_json::<4>(case);
                         check_events_match_reference::<4>(case);
                         for abort_at in 0..kinds.len() {
@@ -580,13 +513,15 @@ mod tests {
         }
     }
 
-    /// Every check that holds today, over every byte string up to
+    /// Every check, over every byte string up to
     /// `ENUM_BYTES` and every string over `ALPHABET` up to `ENUM_ALPHABET`.
     #[test]
     fn exhaustive_short_inputs() {
         let check = |input: &[u8]| {
             bytes_case(input, |case| {
                 check_never_panics::<8>(case);
+                check_context_invariants::<8>(case);
+                check_accepts_only_valid_json::<8>(case);
                 check_accepts_all_valid_json::<8>(case);
                 check_events_match_reference::<8>(case);
                 for abort_at in 0..input.len() {
