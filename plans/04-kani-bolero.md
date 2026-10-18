@@ -110,7 +110,7 @@ Concrete playback is how a failing proof turns into a regular `#[test]`: every K
 
 ### Bounds
 
-Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac (`cargo kani --tests -p yajlish@0.5.0 -Z stubbing`). K1's 12 harnesses ran one at a time, about 9 minutes in all; K3's six ran three at a time, so their times are pessimistic. All 18 together take about 20 minutes in CI. The bounds are much smaller than the starting points this table used to list; the reasons are below the table.
+Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac (`cargo kani --tests -p yajlish@0.5.0 -Z stubbing`). K1's 12 harnesses take about 9 minutes and K3's six about 10; all 18 in one run took 19 minutes. The K3 times are from that run. The bounds are much smaller than the starting points this table used to list; the reasons are below the table.
 
 | Harness | Kani input | Unwind | Time | Rest of the bound covered by |
 |---|---|---|---|---|
@@ -126,12 +126,12 @@ Measured on 2026-10-17 with Kani 0.68.0 / CBMC 6.11.0 on an Apple-silicon Mac (`
 | `decode_never_panics` | exactly 4 bytes | 6 | 121 s | `exhaustive_short_decode_inputs`: every byte string ≤ 3 |
 | `borrowed_iff_no_escape` | exactly 4 bytes | 6 | 123 s | same |
 | `lexer_and_decoder_agree` | exactly 4 bytes, quoted | 6 | 152 s | same, real logos |
-| `parser_never_panics` | ≤ 4 tokens, `Eof` or error | 6 | 63 s | `exhaustive_token_sequences` (the same space, without the stubs); bytes: `exhaustive_short_inputs`, Bolero |
+| `parser_never_panics` | ≤ 4 tokens, `Eof` or error | 6 | 59 s | `exhaustive_token_sequences` (the same space, without the stubs); bytes: `exhaustive_short_inputs`, Bolero |
 | `no_callback_after_abort` | ≤ 4 tokens, abort at any event | 6 | 60 s | same |
-| `accepts_all_valid_json` | ≤ 4 tokens | 6 | 112 s | same, plus `generated_json_is_accepted` (Bolero, random documents) |
-| `events_match_reference` | ≤ 4 tokens | 6 | 120 s | same |
-| `context_invariants_hold` | ≤ 4 tokens, `should_panic` | 6 | 115 s | fails today, see the parser table |
-| `accepts_only_valid_json` | ≤ 4 tokens, `should_panic` | 6 | 125 s | fails today, see the parser table |
+| `accepts_all_valid_json` | ≤ 4 tokens | 6 | 113 s | same, plus `generated_json_is_accepted` (Bolero, random documents) |
+| `events_match_reference` | ≤ 4 tokens | 6 | 118 s | same |
+| `context_invariants_hold` | ≤ 4 tokens, `should_panic` | 6 | 118 s | fails today, see the parser table |
+| `accepts_only_valid_json` | ≤ 4 tokens, `should_panic` | 6 | 129 s | fails today, see the parser table |
 | `chunking_is_invisible`, `offsets_are_monotone`, `max_token_len_is_enforced`, `chunked_parse_is_invisible` | not under Kani | | > 10 min at 2 bytes | `exhaustive_short_stream_inputs` / `exhaustive_short_parse_inputs`: every byte string ≤ 2 bytes and every string ≤ 4 bytes over `ALPHABET`, every split, real logos; Bolero with chunk-size lists |
 
 What the measurements showed:
