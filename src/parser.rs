@@ -19,7 +19,7 @@
 
 use crate::{
     common::{Enclosing, ParserStatus},
-    lexer::{Lexed, StreamLexer, Token, DEFAULT_MAX_TOKEN_LEN},
+    lexer::{LexBuffer, Lexed, StreamLexer, Token, DEFAULT_MAX_TOKEN_LEN},
     Context, Handler, Status,
 };
 use std::io::BufRead;
@@ -29,8 +29,11 @@ pub struct Parser<'a, H> {
     handler: &'a mut H,
     context: Context,
     max_token_len: usize,
-    /// Bytes consumed by earlier `parse` calls, so offsets stay absolute.
-    offset: u64,
+    /// Input not lexed yet, kept across `parse` calls: a token cut off by
+    /// the end of one call's reader continues in the next.
+    pending: LexBuffer,
+    /// The last `parse` call stopped because the handler returned `Abort`.
+    aborted: bool,
 }
 
 impl<'a, H: Handler> Parser<'a, H> {
@@ -40,7 +43,8 @@ impl<'a, H: Handler> Parser<'a, H> {
             handler,
             context: Context::default(),
             max_token_len: DEFAULT_MAX_TOKEN_LEN,
-            offset: 0,
+            pending: LexBuffer::default(),
+            aborted: false,
         }
     }
 
@@ -60,18 +64,22 @@ impl<'a, H: Handler> Parser<'a, H> {
     /// document, and a handler that returns `Status::Abort` always gets
     /// `Ok(())` back from this call.
     ///
-    /// The end of `read` is not the end of the document: if the document is
-    /// unfinished, a later `parse` call on the same `Parser` continues it
-    /// from the next token. A token cut in two by the end of `read` is not
-    /// joined yet. Call `finish_parse` once all input is read.
+    /// The end of `read` is not the end of the document: a later `parse`
+    /// call on the same `Parser` continues where this one stopped, even in
+    /// the middle of a token. A token that could still grow when `read`
+    /// ends (a number, or a cut-off string or keyword) stays buffered and
+    /// its event comes from a later call, so a document that is a bare
+    /// number, like `12`, only delivers its event from `finish_parse`.
+    /// Call `finish_parse` once all input is read.
     ///
     /// # Errors
     ///    - Will return an error Result if the JSON is malformed, or if the underlying
     ///      Reader returns an error.
     pub fn parse<B: BufRead + ?Sized>(&mut self, read: &mut B) -> Result<(), ParseError> {
-        let mut lexer = StreamLexer::new(read, self.max_token_len, self.offset);
+        let mut pending = std::mem::take(&mut self.pending);
+        let mut lexer = StreamLexer::resume(read, &mut pending, self.max_token_len, false);
         let result = self.parse_source(&mut lexer);
-        self.offset = lexer.offset();
+        self.pending = pending;
         result
     }
 
@@ -87,6 +95,7 @@ impl<'a, H: Handler> Parser<'a, H> {
         &mut self,
         lexer: &mut S,
     ) -> Result<(), ParseError> {
+        self.aborted = false;
         let context = &mut self.context;
 
         while !matches!(
@@ -102,14 +111,7 @@ impl<'a, H: Handler> Parser<'a, H> {
                     context.set_offset(offset);
                     (kind, bytes, offset)
                 }
-                Lexed::Eof => {
-                    // Only a complete document is complete. Anything else
-                    // stays as it is for `finish_parse` to report.
-                    if context.parser_status() == ParserStatus::GotValue {
-                        context.update_status(ParserStatus::ParseComplete);
-                    }
-                    break;
-                }
+                Lexed::Eof => break,
             };
 
             let status = context.parser_status();
@@ -225,6 +227,7 @@ impl<'a, H: Handler> Parser<'a, H> {
             };
 
             if handled == Status::Abort {
+                self.aborted = true;
                 return Ok(());
             }
         }
@@ -238,16 +241,37 @@ impl<'a, H: Handler> Parser<'a, H> {
         Ok(())
     }
 
-    /// Parse has already returned from an EOF. This method checks that the
-    /// input was exactly one complete JSON value: every brace and bracket
-    /// closed, and not empty.
+    /// The end of the input. Delivers the event of a token that was still
+    /// pending at the end of the last `parse` call (a top-level number like
+    /// `12` only ends here, since more digits could have followed), then
+    /// checks that the input was exactly one complete JSON value: every
+    /// brace and bracket closed, and not empty.
+    ///
+    /// If the last `parse` call ended because the handler returned
+    /// `Status::Abort`, no more events are delivered; the checks still run.
     ///
     /// # Errors
     ///    - Returns an error Result if the JSON was malformed or incomplete.
-    pub fn finish_parse(self) -> Result<(), ParseError> {
+    pub fn finish_parse(mut self) -> Result<(), ParseError> {
+        if !self.aborted {
+            let mut pending = std::mem::take(&mut self.pending);
+            let mut no_more: &[u8] = &[];
+            let mut lexer =
+                StreamLexer::resume(&mut no_more, &mut pending, self.max_token_len, true);
+            let result = self.parse_source(&mut lexer);
+            self.pending = pending;
+            result?;
+        }
+        self.finish_checks()
+    }
+
+    /// `finish_parse`'s checks, once every token has been through
+    /// `parse_source`.
+    pub(crate) fn finish_checks(mut self) -> Result<(), ParseError> {
+        let end = self.pending.end();
         if self.context.num_open_braces() != 0 || self.context.num_open_brackets() != 0 {
             return Err(ParseError::malformed(
-                self.offset,
+                end,
                 format!(
                     "Number of open braces: {}, number of open brackets: {}",
                     self.context.num_open_braces(),
@@ -255,13 +279,13 @@ impl<'a, H: Handler> Parser<'a, H> {
                 ),
             ));
         }
-        if self.context.parser_status() != ParserStatus::ParseComplete {
+        if self.context.parser_status() != ParserStatus::GotValue {
             return Err(ParseError::malformed(
-                self.offset,
+                end,
                 "Did not reach a ParseComplete status",
             ));
         }
-
+        self.context.update_status(ParserStatus::ParseComplete);
         Ok(())
     }
 }
@@ -272,7 +296,9 @@ pub(crate) trait TokenSource {
     fn next_token(&mut self) -> Result<Lexed<'_>, ParseError>;
 }
 
-impl<R: BufRead + ?Sized> TokenSource for StreamLexer<'_, R> {
+impl<R: BufRead + ?Sized, S: std::borrow::BorrowMut<LexBuffer>> TokenSource
+    for StreamLexer<'_, R, S>
+{
     fn next_token(&mut self) -> Result<Lexed<'_>, ParseError> {
         self.next()
     }

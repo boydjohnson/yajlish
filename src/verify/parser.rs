@@ -265,6 +265,73 @@ fn check_chunked_parse_is_invisible<const N: usize>(input: &[u8], sizes: &[usize
 /// Input size of the Bolero harness's small form.
 const CHUNKED_PARSE_BOUND: usize = 6;
 
+/// One `parse` call per piece of `input`, cut at the offsets in `cuts`
+/// (increasing), then `finish_parse`. Stops at the first error.
+fn parse_in_calls<'i, const N: usize>(
+    input: &'i [u8],
+    cuts: &[usize],
+) -> (Recorder<'i, N>, Result<(), ParseError>) {
+    let mut recorder = Recorder::new(input, true);
+    let mut parser = Parser::new(&mut recorder);
+    let mut start = 0;
+    let mut result = Ok(());
+    for &cut in cuts.iter().chain(std::iter::once(&input.len())) {
+        let end = cut.clamp(start, input.len());
+        result = parser.parse(&mut &input[start..end]);
+        if result.is_err() {
+            break;
+        }
+        start = end;
+    }
+    let result = result.and_then(|()| parser.finish_parse());
+    (recorder, result)
+}
+
+/// A document fed to `parse` in pieces gives the same events and result as
+/// in one piece, wherever the cuts are, including inside a token (K3c).
+fn check_split_across_parse_calls<const N: usize>(input: &[u8], cuts: &[usize]) {
+    let (split, split_result) = parse_in_calls::<N>(input, cuts);
+    let (whole, whole_result) = parse_in_calls::<N>(input, &[]);
+    assert_eq!(split.events(), whole.events(), "cuts {:?}", cuts);
+    assert!(
+        same_result(&split_result, &whole_result),
+        "cuts {:?}: {:?} vs {:?}",
+        cuts,
+        split_result,
+        whole_result
+    );
+}
+
+/// Not a Kani proof, for the same reason as `chunked_parse_is_invisible`;
+/// `tests::exhaustive_split_across_parse_calls` is the exhaustive form.
+#[test]
+fn split_across_parse_calls() {
+    bolero::check!()
+        .with_type::<([u8; CHUNKED_PARSE_BOUND], u8, u8)>()
+        .cloned()
+        .for_each(|(buf, len, split)| {
+            for_each_split(&buf, len, split, |input, split| {
+                check_split_across_parse_calls::<CHUNKED_PARSE_BOUND>(input, &[split]);
+            });
+        });
+}
+
+#[test]
+fn split_across_parse_calls_fuzz() {
+    bolero::check!()
+        .with_type::<(Vec<u8>, Vec<u8>)>()
+        .for_each(|(input, sizes)| {
+            let input = &input[..input.len().min(256)];
+            let mut cuts = vec![];
+            let mut at = 0;
+            for &size in sizes {
+                at += usize::from(size);
+                cuts.push(at);
+            }
+            check_split_across_parse_calls::<256>(input, &cuts);
+        });
+}
+
 /// `chunking_is_invisible` at the event level, through one `parse` call.
 /// The exhaustive form of `tests/test_split_points.rs`.
 // Not a Kani proof: CBMC does not finish `Parser` even on two
@@ -309,6 +376,39 @@ mod tests {
         };
         crate::verify::for_each_shorter_input(crate::verify::ENUM_BYTES + 1, check);
         crate::verify::for_each_alphabet_input(crate::verify::ENUM_ALPHABET, check);
+    }
+
+    /// `split_across_parse_calls` over the same inputs, cut at every subset
+    /// of the byte boundaries: one `parse` call per piece.
+    #[test]
+    fn exhaustive_split_across_parse_calls() {
+        let check = |input: &[u8]| {
+            let inner = input.len().saturating_sub(1);
+            for mask in 0..1u32 << inner {
+                let cuts: Vec<usize> = (0..inner)
+                    .filter(|i| mask >> i & 1 == 1)
+                    .map(|i| i + 1)
+                    .collect();
+                check_split_across_parse_calls::<8>(input, &cuts);
+            }
+        };
+        crate::verify::for_each_shorter_input(crate::verify::ENUM_BYTES + 1, check);
+        crate::verify::for_each_alphabet_input(crate::verify::ENUM_ALPHABET, check);
+    }
+
+    /// The plan's example: `[1` then `2]` is one number, 12.
+    #[test]
+    fn split_number_is_one_token() {
+        let (recorder, result) = parse_in_calls::<8>(b"[12]", &[2]);
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            recorder.events(),
+            &[
+                (Event::StartArray, 0),
+                (Event::Int(12), 1),
+                (Event::EndArray, 3)
+            ]
+        );
     }
 
     /// The strict checks hold on valid documents, so a failure under Kani

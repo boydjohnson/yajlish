@@ -35,7 +35,10 @@ pub(crate) use token::Token;
 
 use crate::parser::ParseError;
 use logos::Logos;
-use std::io::{BufRead, ErrorKind};
+use std::{
+    borrow::BorrowMut,
+    io::{BufRead, ErrorKind},
+};
 
 /// Default cap on the length of a single token, 64 MiB.
 pub(crate) const DEFAULT_MAX_TOKEN_LEN: usize = 64 * 1024 * 1024;
@@ -49,29 +52,70 @@ pub(crate) enum Lexed<'b> {
         bytes: &'b [u8],
         offset: u64,
     },
-    /// The reader is exhausted and only whitespace remained.
+    /// The reader is exhausted, and so is the input that can be lexed
+    /// yet: only whitespace remained, or (before the end of the stream) a
+    /// token that may still grow, which stays buffered.
     Eof,
 }
 
-/// Lexes JSON tokens from a `BufRead`, handling tokens split across reads.
-pub(crate) struct StreamLexer<'r, R: ?Sized> {
-    reader: &'r mut R,
+/// The lexer's state between reads: the unconsumed input and its place in
+/// the stream. `Parser` keeps one across `parse` calls, so that a token cut
+/// off by the end of one call's reader continues in the next.
+#[derive(Debug, Default)]
+pub(crate) struct LexBuffer {
     /// Unconsumed input is `buf[pos..]`.
     buf: Vec<u8>,
     pos: usize,
     /// Absolute stream offset of `buf[0]`.
     base: u64,
+}
+
+impl LexBuffer {
+    /// Absolute offset of the end of the input read so far.
+    pub(crate) fn end(&self) -> u64 {
+        self.base + self.buf.len() as u64
+    }
+}
+
+/// Lexes JSON tokens from a `BufRead`, handling tokens split across reads.
+pub(crate) struct StreamLexer<'r, R: ?Sized, S = LexBuffer> {
+    reader: &'r mut R,
+    state: S,
+    /// Whether the end of `reader` is the end of the stream. If not, the
+    /// lexer stops there with `Eof` and leaves a token that may still grow
+    /// in `state` for the next reader.
+    stream_ends: bool,
+    /// The end of the stream has been reached.
     eof: bool,
     max_token_len: usize,
 }
 
+#[cfg(any(test, kani))]
 impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
+    /// A lexer over the whole stream: the end of `reader` is its end.
     pub(crate) fn new(reader: &'r mut R, max_token_len: usize, base: u64) -> Self {
+        let state = LexBuffer {
+            base,
+            ..LexBuffer::default()
+        };
+        StreamLexer::resume(reader, state, max_token_len, true)
+    }
+}
+
+impl<'r, R: BufRead + ?Sized, S: BorrowMut<LexBuffer>> StreamLexer<'r, R, S> {
+    /// A lexer that continues from `state` with the bytes of `reader`.
+    /// `stream_ends` says whether the end of `reader` is the end of the
+    /// stream.
+    pub(crate) fn resume(
+        reader: &'r mut R,
+        state: S,
+        max_token_len: usize,
+        stream_ends: bool,
+    ) -> Self {
         StreamLexer {
             reader,
-            buf: Vec::new(),
-            pos: 0,
-            base,
+            state,
+            stream_ends,
             eof: false,
             max_token_len,
         }
@@ -79,7 +123,8 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
 
     /// Absolute offset of the first byte not yet returned as a token.
     pub(crate) fn offset(&self) -> u64 {
-        self.base + self.pos as u64
+        let state = self.state.borrow();
+        state.base + state.pos as u64
     }
 
     /// The next token, or `Eof`.
@@ -89,7 +134,8 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
     /// longer than `max_token_len`, `ReadError` if the reader fails.
     pub(crate) fn next(&mut self) -> Result<Lexed<'_>, ParseError> {
         loop {
-            let input = &self.buf[self.pos..];
+            let state = self.state.borrow();
+            let input = &state.buf[state.pos..];
             let mut lexer = Token::lexer(input);
             let first = lexer.next();
             let span = lexer.span();
@@ -97,12 +143,12 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
             let start = match first {
                 // Only whitespace (or nothing) is buffered.
                 None => {
-                    if self.eof {
-                        self.pos = self.buf.len();
+                    let len = state.buf.len();
+                    let eof = self.eof;
+                    self.state.borrow_mut().pos = len;
+                    if eof || !self.refill()? {
                         return Ok(Lexed::Eof);
                     }
-                    self.pos = self.buf.len();
-                    self.refill()?;
                     continue;
                 }
                 Some(_) => span.start,
@@ -118,8 +164,11 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
                 }
                 // Drop the whitespace before the token too, so that the
                 // buffer holds at most the token in flight plus one read.
-                self.pos += start;
-                self.refill()?;
+                self.state.borrow_mut().pos += start;
+                if !self.refill()? {
+                    // More input may come in a later `parse` call.
+                    return Ok(Lexed::Eof);
+                }
                 continue;
             }
 
@@ -130,12 +179,13 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
                     format!("token longer than {} bytes", self.max_token_len),
                 )),
                 Some(Ok(kind)) => {
-                    let begin = self.pos + span.start;
-                    let end = self.pos + span.end;
-                    self.pos = end;
+                    let state = self.state.borrow_mut();
+                    let begin = state.pos + span.start;
+                    let end = state.pos + span.end;
+                    state.pos = end;
                     Ok(Lexed::Token {
                         kind,
-                        bytes: &self.buf[begin..end],
+                        bytes: &state.buf[begin..end],
                         offset,
                     })
                 }
@@ -150,30 +200,37 @@ impl<'r, R: BufRead + ?Sized> StreamLexer<'r, R> {
         }
     }
 
-    /// Compact the buffer and append the reader's next chunk. Sets `eof`
-    /// when the reader returns no bytes.
-    fn refill(&mut self) -> Result<(), ParseError> {
-        if self.pos > 0 {
-            self.buf.drain(..self.pos);
-            self.base += self.pos as u64;
-            self.pos = 0;
+    /// Compact the buffer and append the reader's next chunk. False when
+    /// the reader is exhausted but the stream may go on, so the caller
+    /// should stop for now. At the end of the stream, sets `eof` instead.
+    fn refill(&mut self) -> Result<bool, ParseError> {
+        let state = self.state.borrow_mut();
+        if state.pos > 0 {
+            state.buf.drain(..state.pos);
+            state.base += state.pos as u64;
+            state.pos = 0;
         }
         loop {
             match self.reader.fill_buf() {
                 Ok(chunk) => {
-                    if chunk.is_empty() {
-                        self.eof = true;
-                    } else {
-                        self.buf.extend_from_slice(chunk);
-                    }
                     let n = chunk.len();
+                    if n > 0 {
+                        state.buf.extend_from_slice(chunk);
+                    }
                     self.reader.consume(n);
-                    return Ok(());
+                    if n > 0 {
+                        return Ok(true);
+                    }
+                    if self.stream_ends {
+                        self.eof = true;
+                        return Ok(true);
+                    }
+                    return Ok(false);
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(e) => {
                     return Err(ParseError::ReadError {
-                        offset: self.base + self.buf.len() as u64,
+                        offset: state.end(),
                         msg: e.to_string(),
                     })
                 }

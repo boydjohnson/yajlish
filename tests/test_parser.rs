@@ -405,3 +405,61 @@ fn test_document_continues_across_parse_calls() {
     parser.finish_parse().unwrap();
     assert_eq!(handler.0, vec![0, 1, 4, 5]);
 }
+
+/// A token cut by the end of one `parse` call continues in the next, so a
+/// top-level number only ends at `finish_parse`: more digits could follow.
+#[test]
+fn test_top_level_number_ends_at_finish_parse() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser.parse(&mut &b"1"[..]).unwrap();
+    parser.parse(&mut &b"2"[..]).unwrap();
+    parser.finish_parse().unwrap();
+    assert_eq!(handler.0, vec![0]);
+}
+
+/// `with_max_token_len` bounds a token that is buffered across `parse`
+/// calls, not only within one.
+#[test]
+fn test_max_token_len_across_parse_calls() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler).with_max_token_len(8);
+    let input = b"\"aaaaaaaaaaaaaaaaaaaa\"";
+    let err = input
+        .chunks(1)
+        .map(|byte| parser.parse(&mut &byte[..]))
+        .find_map(Result::err)
+        .expect("the token is longer than 8 bytes");
+    assert!(
+        matches!(err, yajlish::ParseError::MalformedJson { offset: 0, .. }),
+        "{:?}",
+        err
+    );
+}
+
+/// Content after a complete document is an error, even when it arrives in
+/// a later `parse` call. A number there could still grow, so it is only
+/// rejected by `finish_parse`.
+#[test]
+fn test_content_after_document_in_later_call() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser.parse(&mut &b"[1]"[..]).unwrap();
+    let err = parser.parse(&mut &b" true"[..]).unwrap_err();
+    assert!(
+        matches!(err, yajlish::ParseError::MalformedJson { offset: 4, .. }),
+        "{:?}",
+        err
+    );
+
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser.parse(&mut &b"[1]"[..]).unwrap();
+    parser.parse(&mut &b" 2"[..]).unwrap();
+    let err = parser.finish_parse().unwrap_err();
+    assert!(
+        matches!(err, yajlish::ParseError::MalformedJson { offset: 4, .. }),
+        "{:?}",
+        err
+    );
+}

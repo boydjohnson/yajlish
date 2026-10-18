@@ -23,9 +23,16 @@
   called for a prefix of a valid document; a mismatched `}` or `]` no
   longer reaches `handle_end_map`/`handle_end_array`. A handler that returns
   `Status::Abort` always gets `Ok(())` from `parse`.
-- A document cut between tokens continues in the next `parse` call on the
-  same `Parser`; before, the end of the first reader ended the document.
-  `finish_parse` checks that exactly one complete value was read.
+- **Breaking:** the input may be split across `parse` calls anywhere, even
+  inside a token: `parse(b"[1")` then `parse(b"2]")` delivers one
+  `handle_int(12)`. The end of a `parse` call's reader means "no more bytes
+  for now"; only `finish_parse` marks the end of the input. So a token that
+  could still grow at the end of a call is delivered later, and a document
+  that is a bare top-level number (`12`) only delivers its event from
+  `finish_parse`. Call `finish_parse` once all input is read; it checks that
+  exactly one complete value was read, and content after it in a later
+  `parse` call is an error. `with_max_token_len` bounds a token buffered
+  across calls too. Before, the end of the first reader ended the document.
 - Reader errors are returned as `ParseError::ReadError` instead of looking like EOF.
 - No input can make the parser panic. Tokens are capped at 64 MiB by default
   (`Parser::with_max_token_len`).

@@ -50,13 +50,14 @@ impl<'a> Case<'a> {
         }
     }
 
-    /// `parse_source` then `finish_parse`, as `parse` would run them.
+    /// `parse_source` then `finish_parse`'s checks. The sequence is the
+    /// whole stream, so `finish_parse` would have nothing left to flush.
     fn parse<const N: usize>(&self, recorder: Recorder<'a, N>) -> (Recorder<'a, N>, bool) {
         let mut recorder = recorder;
         let mut parser = Parser::new(&mut recorder);
         let ok = parser
             .parse_source(&mut self.seq())
-            .and_then(|()| parser.finish_parse())
+            .and_then(|()| parser.finish_checks())
             .is_ok();
         (recorder, ok)
     }

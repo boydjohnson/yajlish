@@ -198,7 +198,7 @@ All use `Recorder`, which asserts on every callback:
 | `accepts_all_valid_json` | K+B | The converse: every token sequence the reference accepts is accepted by the parser. Bolero also runs `generated_json_is_accepted` on random documents with random whitespace. | **pass** |
 | `events_match_reference` | K+B | For input the reference accepts, the parser's events equal the reference's. | **pass** |
 | `chunked_parse_is_invisible` | B + exhaustive | Same as `chunking_is_invisible`, at the event level through `Parser`. Exhaustive form of `tests/test_split_points.rs`. | pass |
-| `split_across_parse_calls` | K+B | For any input ≤ 6 bytes and split `k`, `parse(&input[..k])`, `parse(&input[k..])`, `finish_parse()` gives the same events and result as one `parse` of the whole input followed by `finish_parse()`. | **fails**: `[1` then `2]` gives two numbers (see "Tokens span `parse` calls"). |
+| `split_across_parse_calls` | B + exhaustive | For any input ≤ 6 bytes and split `k`, `parse(&input[..k])`, `parse(&input[k..])`, `finish_parse()` gives the same events and result as one `parse` of the whole input followed by `finish_parse()`. The fuzz version cuts long inputs into many `parse` calls; `exhaustive_split_across_parse_calls` cuts the short-input sets at every subset of byte boundaries. Not Kani: it runs `StreamLexer`. | **pass since K3c.** Before, `[1` then `2]` gave two numbers (see "Tokens span `parse` calls"). |
 
 The reference recognizer (`src/verify/reference.rs`) is an explicit-stack pushdown automaton over `Token`s, written directly from the RFC 8259 grammar, about 60 lines, no recursion (so Kani needs no extra unwinding for depth). Before it is trusted as an oracle it is run over JSONTestSuite: it must accept every `y_*` and reject every `n_*` whose tokens lex, with **no allowlist**. *K3: it does (`reference_passes_json_test_suite`).*
 
@@ -211,6 +211,14 @@ The reference recognizer (`src/verify/reference.rs`) is an explicit-stack pushdo
 A token cut off at the end of one `parse` call continues in the next: `parse(b"[1")` then `parse(b"2]")` must deliver one `handle_int(12)`. Today each `parse` builds a new `StreamLexer` (`src/parser.rs:62`), which treats the end of its reader as the end of the stream, so it emits `1` and then `2`. (Since K3b, that is. Before it, the first call's end of input ended the document, so the second call read nothing.)
 
 The fix (K3c) keeps the lexer's buffer in `Parser` between calls instead of in a per-call `StreamLexer`. The end of one reader then means "no more bytes for now", and a token that may still extend stays buffered. Only `finish_parse` marks the true end of the stream and flushes it. One consequence callers will see: a document that is a bare top-level number (`12`) only produces its event from `finish_parse`, because until then a later call could append digits. Strings, keywords and containers are unaffected since they end in a byte that can't extend. That changes the documented contract of `parse` and `finish_parse`, so the changelog and the `Parser` docs say so.
+
+*K3c as built (2026-10-18).* The lexer's state is a `LexBuffer` (unconsumed bytes and their stream offset) that `Parser` keeps; each `parse` runs a `StreamLexer` that resumes it with "the end of this reader is not the end of the stream", so a token that may still grow is left buffered and the call returns. `finish_parse` resumes it once more with an empty reader marked as the end of the stream, which delivers the pending token's event, then runs the end checks (`Parser::finish_checks`, which the token-level Kani harnesses call directly, since their token sequence is already the whole stream). Three details:
+
+- `parse_source` no longer marks the document complete at the end of a reader; `finish_checks` does. So content after a complete document in a later `parse` call is rejected like any value after a value (a trailing number only at `finish_parse`, since it is pending until then).
+- If the last `parse` call ended in `Abort`, `finish_parse` delivers no more events and only runs the checks.
+- `with_max_token_len` bounds the buffered token across calls (`test_max_token_len_across_parse_calls`).
+
+No caller in the workspace needed changing: every one that needs the last event already calls `finish_parse`. The ones that call `parse` alone parse containers or strings (complete at `}`, `]` or `"`), deliberately incomplete documents, or abort early; that includes `yajlish-schema`'s "parse only" bench, whose input is an object.
 
 ### `yajlish-ndjson`
 
@@ -252,7 +260,7 @@ The fix (K3c) keeps the lexer's buffer in `Parser` between calls instead of in a
 | K2 | Chunk independence (lexer and parser levels) | `chunking_is_invisible`, `chunked_parse_is_invisible` green at bound 6. **Done differently:** Kani cannot run `StreamLexer`; both are exhaustive up to 2 bytes (all bytes) and 4 bytes (`ALPHABET`), plus Bolero |
 | K3 | Parser state machine, reference recognizer, `accepts_only_valid_json` as `should_panic` | Reference passes JSONTestSuite with no allowlist; counterexamples committed as unit tests. **Done** at 4 tokens, through the `parse_source` refactor; `context_invariants_hold` also lands as `should_panic` |
 | K3b | Parser hardening (separate PR, behaviour change) | `accepts_only_valid_json` passes without `should_panic`; `N_ALLOWLIST` is empty. **Done**; `context_invariants_hold` passes too |
-| K3c | Tokens span `parse` calls: lexer buffer moves into `Parser`, `finish_parse` flushes (separate PR, behaviour change) | `split_across_parse_calls` passes; `Parser` docs and changelog updated |
+| K3c | Tokens span `parse` calls: lexer buffer moves into `Parser`, `finish_parse` flushes (separate PR, behaviour change) | `split_across_parse_calls` passes; `Parser` docs and changelog updated. **Done** |
 | K4 | ndjson and selector harnesses | Rows green |
 | K5 | Schema `num`/`value` proofs, runtime harness, macro name fuzzing | Rows green |
 | K6 | Corpora seeded, nightly fuzz job | One clean nightly run per target |
