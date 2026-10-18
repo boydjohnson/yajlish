@@ -25,8 +25,8 @@
 
 // `cargo kani --tests` also builds this crate without `cfg(test)` (as a
 // dependency of the integration tests), where the `#[test]` harnesses and
-// so their helpers are gone.
-#![cfg_attr(not(test), allow(dead_code))]
+// so their helpers and the imports they use are gone.
+#![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
 mod decode;
 mod lexer;

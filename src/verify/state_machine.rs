@@ -131,6 +131,7 @@ fn check_events_match_reference<const N: usize>(case: &Case<'_>) {
 /// exactly one `Context`, so one static stack is enough; everything that
 /// reads the stack (the parser, `Recorder`) goes through these methods.
 #[cfg(kani)]
+#[allow(dead_code)] // Only named by `kani::stub`.
 mod context_stack {
     use crate::{Context, Enclosing};
 
@@ -200,6 +201,7 @@ fn bytes_case(input: &[u8], f: impl FnOnce(&Case<'_>)) {
 }
 
 /// Bolero: input bytes.
+#[cfg(not(kani))]
 const BYTES_BOUND: usize = 8;
 /// Bolero fuzz versions: longer inputs, cut to this.
 const FUZZ_BOUND: usize = 256;

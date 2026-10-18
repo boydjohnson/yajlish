@@ -74,10 +74,6 @@ jobs:
   kani:
     name: Kani proofs
     runs-on: ubuntu-latest
-    env:
-      # Kani passes its own flags to rustc and warns about them; it is
-      # checked with -Dwarnings by the jobs above.
-      RUSTFLAGS: ""
     steps:
     - uses: actions/checkout@master
 
