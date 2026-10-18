@@ -144,16 +144,11 @@ fn gen_value(choices: &mut impl Iterator<Item = u8>, depth: u32) -> serde_json::
 }
 
 /// The fuzz version of `tests/test_prop_test.rs`: with the selector
-/// `d.a.b`, each output line parses to the matching element of the array
-/// at `/a/b`, and `finish` is `SelectorNotFound` exactly when there is no
-/// array there.
-///
-/// With `non_array_at_path` false, documents that match the path only
-/// partly (`/a` exists, but `/a/b` is missing or not an array) are
-/// skipped: the handler gets those wrong today when a matching key comes
-/// later (`tests::non_array_selection_*`). With it true, only those run.
+/// `d.a.b` (or `d[1].b`), each output line parses to the matching element
+/// of the array at `/a/b` (or `/1/b`), and `finish` is `SelectorNotFound`
+/// exactly when there is no array there.
 #[cfg(test)]
-fn check_lines_match_elements(choices: &[u8], pretty: bool, non_array_at_path: bool) {
+fn check_lines_match_elements(choices: &[u8], pretty: bool) {
     use serde_json::{json, Value};
     let mut choices = choices.iter().copied();
     let a = match choices.next().unwrap_or(0) % 4 {
@@ -166,26 +161,31 @@ fn check_lines_match_elements(choices: &[u8], pretty: bool, non_array_at_path: b
         2 => json!({ "b": gen_value(&mut choices, 2) }),
         _ => gen_value(&mut choices, 2),
     };
-    let doc = json!({ "before": gen_value(&mut choices, 2), "a": a, "after": gen_value(&mut choices, 2) });
-    // The path is matched only partly: `/a` exists but `/a/b` is not an
-    // array (missing, or another kind of value).
-    let partial =
-        doc.pointer("/a").is_some() && !matches!(doc.pointer("/a/b"), Some(Value::Array(_)));
-    if partial != non_array_at_path {
-        return;
-    }
+    // The same `a` at `/a` of an object or at `/1` of an array.
+    let (doc, selector, pointer) = if choices.next().unwrap_or(0) % 2 == 0 {
+        let doc = json!({ "before": gen_value(&mut choices, 2), "a": a, "after": gen_value(&mut choices, 2) });
+        (doc, "d.a.b", "/a/b")
+    } else {
+        let mut items = vec![gen_value(&mut choices, 2)];
+        // Sometimes no element 1 at all.
+        if choices.next().unwrap_or(0) % 4 != 0 {
+            items.push(a);
+            items.push(gen_value(&mut choices, 2));
+        }
+        (Value::Array(items), "d[1].b", "/1/b")
+    };
     let text = if pretty {
         serde_json::to_string_pretty(&doc).unwrap()
     } else {
         serde_json::to_string(&doc).unwrap()
     };
 
-    let selectors = SelectorParser::new().parse("d.a.b").unwrap();
+    let selectors = SelectorParser::new().parse(selector).unwrap();
     let mut handler = NdJsonHandler::new(vec![], selectors);
     let mut parser = Parser::new(&mut handler);
     parser.parse(&mut text.as_bytes()).unwrap();
     parser.finish_parse().unwrap();
-    match (doc.pointer("/a/b"), handler.finish()) {
+    match (doc.pointer(pointer), handler.finish()) {
         (Some(Value::Array(elements)), Ok(out)) => {
             let out = String::from_utf8(out).unwrap();
             let lines: Vec<Value> = out
@@ -208,18 +208,7 @@ fn check_lines_match_elements(choices: &[u8], pretty: bool, non_array_at_path: b
 fn ndjson_lines_match_elements() {
     bolero::check!()
         .with_type::<(Vec<u8>, bool)>()
-        .for_each(|(choices, pretty)| check_lines_match_elements(choices, *pretty, false));
-}
-
-/// `ndjson_lines_match_elements` on documents that match the path only
-/// partly, which must be `SelectorNotFound`. Fails today, see
-/// `tests::non_array_selection_*`.
-#[test]
-#[ignore = "NdJsonHandler bug: selector not anchored to the value it matched"]
-fn ndjson_non_array_selection() {
-    bolero::check!()
-        .with_type::<(Vec<u8>, bool)>()
-        .for_each(|(choices, pretty)| check_lines_match_elements(choices, *pretty, true));
+        .for_each(|(choices, pretty)| check_lines_match_elements(choices, *pretty));
 }
 
 #[cfg(test)]
@@ -244,40 +233,36 @@ mod tests {
         );
     }
 
-    /// Found by `ndjson_lines_match_elements`. The selector is not anchored
-    /// to what it matched: once a step matches, the handler keeps looking
-    /// for the next step (or for an array, after the last step) anywhere
-    /// later in the document at that depth, even after the matched value
-    /// has ended. Without such a later match it is `SelectorNotFound`, as
-    /// documented. Here the selected value is not an array, and the next
-    /// `[` starts writing at the wrong depth: it writes `{"x":1]}}`.
+    /// Regression tests for a bug `ndjson_lines_match_elements` found: the
+    /// selector was not anchored to what it matched. Once a step matched,
+    /// the handler looked for the next step (or for an array, after the
+    /// last step) anywhere later in the document at that depth, even after
+    /// the matched value had ended. Here the selected value is not an
+    /// array, and the next `[` started writing at the wrong depth: it wrote
+    /// `{"x":1]}}`.
     #[test]
-    #[ignore = "NdJsonHandler bug: selector not anchored to the value it matched"]
     fn non_array_selection_inside() {
         selects_nothing("d.a", r#"{"a":{"x":[1]}}"#);
     }
 
-    /// The same bug with the array after the selected value: the fuzz
-    /// counterexample, `{"a":{"b":null},"after":null,"before":[]}`, wrote
+    /// The array after the selected value: the fuzz counterexample,
+    /// `{"a":{"b":null},"after":null,"before":[]}`, wrote
     /// `null},"after":null,"before":]}`.
     #[test]
-    #[ignore = "NdJsonHandler bug: selector not anchored to the value it matched"]
     fn non_array_selection_after() {
         selects_nothing("d.a.b", r#"{"a":{"b":null},"after":null,"before":[]}"#);
     }
 
-    /// The same bug one step earlier: `a` is `null`, not an object, and the
-    /// handler then takes `b` from the next object, `c`, and writes `1`.
+    /// One step earlier: `a` is `null`, not an object, and the handler took
+    /// `b` from the next object, `c`, and wrote `1`.
     #[test]
-    #[ignore = "NdJsonHandler bug: selector not anchored to the value it matched"]
     fn non_array_selection_sibling() {
         selects_nothing("d.a.b", r#"{"a":null,"c":{"b":[1]}}"#);
     }
 
-    /// The same bug with the right kinds: `a` is an object without `b`, and
-    /// the handler takes `b` from the next object, `c`.
+    /// With the right kinds: `a` is an object without `b`, and the handler
+    /// took `b` from the next object, `c`.
     #[test]
-    #[ignore = "NdJsonHandler bug: selector not anchored to the value it matched"]
     fn non_array_selection_missing_key() {
         selects_nothing("d.a.b", r#"{"a":{},"c":{"b":[1]}}"#);
     }
