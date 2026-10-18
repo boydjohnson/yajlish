@@ -1,2 +1,6 @@
 /target
 Cargo.lock
+# Bolero corpora: seeded by scripts/seed-corpora.sh and grown by fuzzing.
+# `crashes/` is not ignored: a crash worth keeping is committed as a
+# regression input, which `cargo test` replays.
+**/__fuzz__/*/corpus/

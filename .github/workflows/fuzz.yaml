@@ -1,0 +1,59 @@
+name: Fuzz
+
+# Plan 4, K6: every Bolero target in scripts/fuzz-targets.txt runs for 5
+# minutes under libFuzzer, nightly and on demand, not on pull requests.
+# A target that fails uploads its crash files; commit one under the
+# target's `__fuzz__/.../crashes/` to replay it in `cargo test`.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  targets:
+    name: List fuzz targets
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Read scripts/fuzz-targets.txt
+      id: list
+      run: |
+        matrix=$(grep -v '^#' scripts/fuzz-targets.txt | grep -v '^$' \
+          | jq -R -s -c 'split("\n") | map(select(length > 0) | split(" ") | {package: .[0], target: .[1]})')
+        echo "matrix={\"include\":$matrix}" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    needs: targets
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install nightly
+      run: |
+        rustup toolchain install nightly --profile minimal
+        rustup default nightly
+
+    - name: Install cargo-bolero
+      run: cargo install --locked cargo-bolero
+
+    - name: Seed corpora
+      run: scripts/seed-corpora.sh
+
+    - name: Fuzz for 5 minutes
+      run: cargo bolero test -p "${{ matrix.package }}" "${{ matrix.target }}" --engine libfuzzer -T 5min
+
+    - name: Upload crashes
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: crashes-${{ matrix.package }}-${{ strategy.job-index }}
+        path: "**/__fuzz__/*/crashes/"
+        if-no-files-found: ignore

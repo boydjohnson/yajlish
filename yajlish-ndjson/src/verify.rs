@@ -103,7 +103,8 @@ fn ndjson_never_panics() {
 
 #[test]
 fn ndjson_never_panics_fuzz() {
-    bolero::check!().with_type::<Vec<u8>>().for_each(|input| {
+    // Raw bytes, so that the seed corpus (JSON files) is the input.
+    bolero::check!().for_each(|input: &[u8]| {
         check_ndjson_never_panics(input);
     });
 }

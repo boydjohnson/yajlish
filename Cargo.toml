@@ -55,3 +55,11 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }
 [[bench]]
 name = "parse"
 harness = false
+
+# `cargo bolero` builds fuzz targets with this profile: optimized, but with
+# debug assertions and overflow checks, which are what fuzzing should hit.
+[profile.fuzz]
+inherits = "dev"
+opt-level = 3
+incremental = false
+codegen-units = 1

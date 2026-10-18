@@ -246,9 +246,11 @@ No caller in the workspace needed changing: every one that needs the last event 
 ## Fuzz corpora and CI
 
 - Seed every Bolero target that takes bytes from `tests/valid_json_fixtures/`, `tests/json_test_suite/test_parsing/` and `yajlish-ndjson`'s fixtures, copied into `__fuzz__/<target>/corpus/` by `scripts/seed-corpora.sh`.
+  *K6 as built:* the targets that read raw JSON take Bolero's raw `&[u8]` input (`check!().for_each(|input: &[u8]| ..)`), so a seed file is exactly the input; `with_type::<Vec<u8>>()` would reinterpret it. The script seeds eight targets (the five state-machine fuzz targets, `ref_lexer_matches_logos`, `utf8_check_matches_std` and `ndjson_never_panics`), about 320 files each. Bolero's directory is `__fuzz__/<module path with :: as __, minus any _fuzz suffix>/` next to the defining file, so a fuzz target shares it with its fixed-size harness of the same name, which then replays the seeds as well. `cargo test` replays every corpus file; all seeds pass every harness. The seeds are copies, so `**/__fuzz__/*/corpus/` is in `.gitignore`; `crashes/` is not, so a crash worth keeping can be committed as a regression input.
 - New CI jobs in `.github/workflows/ci.yaml`:
   - `kani` (every PR): `model-checking/kani-github-action@v1`, running `cargo kani --tests -p yajlish@0.5.0 -p yajlish-schema -Z stubbing` (about 20 minutes after K3; K5 adds about 70 s; K4 added no Kani proofs). Since K3b no harness is `should_panic`.
   - `fuzz` (nightly schedule, not PRs): nightly toolchain, `cargo install cargo-bolero`, 5 minutes per target with libFuzzer, uploading any crash as an artifact.
+    *K6 as built:* `.github/workflows/fuzz.yaml`, daily at 06:17 UTC and on manual dispatch. One matrix job per line of `scripts/fuzz-targets.txt` (23 targets: every fuzz version and every Bolero-only harness), each seeding the corpora and running `cargo bolero test -p <package> <target> --engine libfuzzer -T 5min`. The workspace gained `[profile.fuzz]` (opt-level 3 with debug assertions), which `cargo bolero` needs. Locally, all 23 ran clean for 15 s each (126k–6.5M runs per target). Left out: `yajlish-schema-macros`' `names_are_valid_idents`, whose proc-macro test binary cannot load the dynamically linked libstd under `cargo bolero` on macOS; `cargo test` still runs it. "One clean nightly run per target" needs the job to run on GitHub, so it is not checked off yet.
 - The existing `cargo test --all` job runs every Bolero harness with random inputs at no extra setup cost.
 
 ## Milestones
@@ -261,9 +263,9 @@ No caller in the workspace needed changing: every one that needs the last event 
 | K3 | Parser state machine, reference recognizer, `accepts_only_valid_json` as `should_panic` | Reference passes JSONTestSuite with no allowlist; counterexamples committed as unit tests. **Done** at 4 tokens, through the `parse_source` refactor; `context_invariants_hold` also lands as `should_panic` |
 | K3b | Parser hardening (separate PR, behaviour change) | `accepts_only_valid_json` passes without `should_panic`; `N_ALLOWLIST` is empty. **Done**; `context_invariants_hold` passes too |
 | K3c | Tokens span `parse` calls: lexer buffer moves into `Parser`, `finish_parse` flushes (separate PR, behaviour change) | `split_across_parse_calls` passes; `Parser` docs and changelog updated. **Done** |
-| K4 | ndjson and selector harnesses | Rows green |
-| K5 | Schema `num`/`value` proofs, runtime harness, macro name fuzzing | Rows green |
-| K6 | Corpora seeded, nightly fuzz job | One clean nightly run per target |
+| K4 | ndjson and selector harnesses | Rows green. **Done**, except `ndjson_lines_match_elements`, which found a selector bug (see the ndjson table); none are Kani proofs |
+| K5 | Schema `num`/`value` proofs, runtime harness, macro name fuzzing | Rows green. **Done**; some proofs narrowed or Bolero (see the schema table) |
+| K6 | Corpora seeded, nightly fuzz job | One clean nightly run per target. **Built**; clean 15 s local runs, the first nightly run is pending |
 
 K0–K2 can be one PR. K3, K3b, K3c, K4 and K5 are separate PRs.
 
