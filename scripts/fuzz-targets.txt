@@ -1,0 +1,31 @@
+# Bolero fuzz targets for the nightly job: package and test path.
+# The fixed-size Kani/Bolero harnesses are left out; each has a fuzz
+# version here that takes inputs of any length.
+#
+# Not here: yajlish-schema-macros' fuzz_names::names_are_valid_idents. A
+# proc-macro crate's test binary links libstd dynamically, and under
+# `cargo bolero` on macOS it fails to load it; `cargo test` still runs it
+# with random inputs, and its exhaustive test covers short names.
+yajlish@0.5.0 verify::decode::decode_matches_serde_json
+yajlish@0.5.0 verify::decode::lexer_and_decoder_agree_fuzz
+yajlish@0.5.0 verify::lexer::chunking_is_invisible_fuzz
+yajlish@0.5.0 verify::lexer::offsets_are_monotone_fuzz
+yajlish@0.5.0 verify::parser::chunked_parse_is_invisible_fuzz
+yajlish@0.5.0 verify::parser::split_across_parse_calls_fuzz
+yajlish@0.5.0 verify::ref_lexer::ref_lexer_matches_logos_fuzz
+yajlish@0.5.0 verify::state_machine::accepts_all_valid_json_fuzz
+yajlish@0.5.0 verify::state_machine::accepts_only_valid_json_fuzz
+yajlish@0.5.0 verify::state_machine::context_invariants_hold_fuzz
+yajlish@0.5.0 verify::state_machine::events_match_reference_fuzz
+yajlish@0.5.0 verify::state_machine::generated_json_is_accepted
+yajlish@0.5.0 verify::state_machine::no_callback_after_abort_fuzz
+yajlish@0.5.0 verify::state_machine::parser_never_panics_fuzz
+yajlish@0.5.0 verify::tests::utf8_check_matches_std_fuzz
+yajlish-ndjson verify::ndjson_lines_match_elements
+yajlish-ndjson verify::ndjson_never_panics_fuzz
+yajlish-ndjson verify::selector_parse_never_panics_fuzz
+yajlish-ndjson verify::selector_round_trip
+yajlish-schema verify::float_multiple_of_never_panics
+yajlish-schema candidates_only_shrink
+yajlish-schema runtime_never_panics
+yajlish-schema unique_means_exactly_one

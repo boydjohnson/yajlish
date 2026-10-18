@@ -111,15 +111,6 @@ impl WritingCtx {
         }
     }
 
-    fn first_context() -> Self {
-        WritingCtx {
-            num_open_braces: 0,
-            num_open_brackets: 1,
-            inside_array: false,
-            first: true,
-        }
-    }
-
     fn is_at_correct_location(&self, ctx: &Context) -> bool {
         ctx.num_open_brackets() == self.num_open_brackets
             && ctx.num_open_braces() == self.num_open_braces
@@ -142,80 +133,94 @@ impl WritingCtx {
     }
 }
 
+/// Finds the selected array: the value reached from the document root by
+/// following every selector. Tracks the containers open around the current
+/// position and, for each, whether it is itself on the selector path, so a
+/// match is always anchored to the container the previous step matched.
 #[derive(Debug)]
 struct Select {
-    stack: Vec<Box<dyn IsLocation + Send + Sync>>,
     selectors: Vec<Selector>,
-    i: usize,
+    /// Open containers, outermost first. `frames[p]` is the value at
+    /// `selectors[..p]` when `on_path` is set, and its children are matched
+    /// against `selectors[p]`.
+    frames: Vec<Frame>,
+}
+
+#[derive(Debug)]
+struct Frame {
+    on_path: bool,
+    is_map: bool,
+    /// Maps: whether the current key is this frame's selector.
+    key_matches: bool,
+    /// Arrays: the index of the next element.
+    next_index: usize,
+}
+
+/// What a value that is starting is, relative to the selector path.
+#[derive(Debug, PartialEq)]
+enum Place {
+    /// The selected value itself.
+    Target,
+    /// The value at a proper prefix of the path: the next selector applies
+    /// to its children.
+    OnPath(usize),
+    Off,
 }
 
 impl Select {
-    fn is_identifier_selector_selection(&self, ctx: &Context, val: &str) -> bool {
-        match self.selectors.last() {
-            Some(Selector::Identifier(ident)) => {
-                self.stack
-                    .last()
-                    .is_some_and(|s| (**s).is_correct_location(ctx))
-                    && decode_str(val).is_ok_and(|key| key == ident.as_str())
+    /// A value starts at the current position: where is it?
+    fn value_start(&mut self) -> Place {
+        let k = self.frames.len();
+        let on_path = match self.frames.last_mut() {
+            // The document root is at the empty path.
+            None => true,
+            Some(frame) if frame.is_map => frame.on_path && frame.key_matches,
+            Some(frame) => {
+                let index = frame.next_index;
+                frame.next_index += 1;
+                frame.on_path && self.selectors.get(k - 1) == Some(&Selector::Index(index))
             }
-            _ => false,
+        };
+        if !on_path {
+            Place::Off
+        } else if k == self.selectors.len() {
+            Place::Target
+        } else {
+            Place::OnPath(k)
         }
     }
 
-    fn is_array_index_selector_selection(&self, ctx: &Context) -> bool {
-        match self.selectors.last() {
-            Some(Selector::Index(index)) => {
-                self.stack
-                    .last()
-                    .is_some_and(|s| (**s).is_correct_location(ctx))
-                    && self.i == *index
-            }
-            _ => false,
+    /// A container starts at `place`.
+    fn push(&mut self, place: &Place, is_map: bool) {
+        // On the path only if it is the kind of container the next
+        // selector looks into.
+        let on_path = match place {
+            Place::OnPath(k) => matches!(
+                (&self.selectors[*k], is_map),
+                (Selector::Identifier(_), true) | (Selector::Index(_), false)
+            ),
+            Place::Target | Place::Off => false,
+        };
+        self.frames.push(Frame {
+            on_path,
+            is_map,
+            key_matches: false,
+            next_index: 0,
+        });
+    }
+
+    fn key(&mut self, raw: &str) {
+        let p = self.frames.len().wrapping_sub(1);
+        let selector = self.selectors.get(p);
+        if let Some(frame) = self.frames.last_mut() {
+            frame.key_matches = frame.on_path
+                && matches!(selector, Some(Selector::Identifier(ident))
+                    if decode_str(raw).is_ok_and(|key| key == ident.as_str()));
         }
     }
 
-    fn remove_last(&mut self) -> bool {
-        self.selectors.pop();
-        self.stack.pop();
-        self.i = 0;
-        self.stack.is_empty() && self.selectors.is_empty()
-    }
-
-    fn new_array_location(&mut self, ctx: &Context) {
-        if self
-            .stack
-            .last()
-            .is_some_and(|s| (**s).is_correct_location(ctx))
-            && ctx.parser_status() == ParserStatus::ArrayNeedVal
-        {
-            self.i += 1;
-        }
-    }
-}
-
-trait IsLocation: std::fmt::Debug {
-    fn is_correct_location(&self, ctx: &Context) -> bool;
-}
-
-#[derive(Debug)]
-struct ObjSelector {
-    num_open_braces: usize,
-}
-
-impl IsLocation for ObjSelector {
-    fn is_correct_location(&self, ctx: &Context) -> bool {
-        self.num_open_braces + 1 == ctx.num_open_braces()
-    }
-}
-
-#[derive(Debug)]
-struct ArraySelector {
-    num_open_brackets: usize,
-}
-
-impl IsLocation for ArraySelector {
-    fn is_correct_location(&self, ctx: &Context) -> bool {
-        self.num_open_brackets + 1 == ctx.num_open_brackets()
+    fn container_end(&mut self) {
+        self.frames.pop();
     }
 }
 
@@ -223,47 +228,19 @@ impl<OUT> NdJsonHandler<OUT>
 where
     OUT: Write,
 {
-    /// Constructor.
+    /// A handler that writes the elements of the array that `selectors`
+    /// select. They are a path from the document root, followed exactly:
+    /// `Identifier("a")` is the value of key `a` in an object, `Index(1)`
+    /// the second element of an array, and an empty path selects the root.
+    /// The value at the end of the path must be an array; if it is
+    /// anything else, or the path is not in the document, `finish` returns
+    /// `SelectorNotFound`. With repeated keys, the first array found at
+    /// the path is selected.
     pub fn new(out: OUT, selectors: Vec<Selector>) -> Self {
-        let is_locations: Vec<Box<dyn IsLocation + Send + Sync>> = (0..selectors.len())
-            .fold(
-                vec![],
-                |mut sel: Vec<Box<dyn IsLocation + Send + Sync + 'static>>, i| match selectors[i] {
-                    Selector::Identifier(_) => {
-                        let num_open_braces = (0..i).fold(0, |mut acc, j| {
-                            if let Selector::Identifier(_) = selectors[j] {
-                                acc += 1;
-                            }
-                            acc
-                        });
-                        sel.push(Box::new(ObjSelector { num_open_braces }));
-                        sel
-                    }
-                    Selector::Index(_) => {
-                        let num_open_brackets = (0..i).fold(0, |mut acc, j| {
-                            if let Selector::Index(_) = selectors[j] {
-                                acc += 1;
-                            }
-                            acc
-                        });
-                        sel.push(Box::new(ArraySelector { num_open_brackets }));
-                        sel
-                    }
-                },
-            )
-            .into_iter()
-            .rev()
-            .collect();
-
-        let context = if is_locations.is_empty() {
-            NdjsonContext::Writing(WritingCtx::first_context())
-        } else {
-            NdjsonContext::Selecting(Select {
-                stack: is_locations,
-                selectors: selectors.into_iter().rev().collect(),
-                i: 0,
-            })
-        };
+        let context = NdjsonContext::Selecting(Select {
+            selectors,
+            frames: vec![],
+        });
 
         NdJsonHandler {
             sink: Sink { out, error: None },
@@ -305,27 +282,9 @@ where
         }
     }
 
-    fn increment_selectors(&mut self, ctx: &Context) {
-        let update = match &mut self.context {
-            NdjsonContext::Selecting(ref mut selecting) => selecting.remove_last(),
-            NdjsonContext::Writing(_) | NdjsonContext::Done => false,
-        };
-
-        if update {
-            self.context = NdjsonContext::Writing(WritingCtx::new(
-                ctx.num_open_braces(),
-                ctx.num_open_brackets() + 1,
-            ));
-        }
-    }
-
     fn map_key(&mut self, ctx: &Context, val: &str) {
         match &mut self.context {
-            NdjsonContext::Selecting(ref mut select) => {
-                if select.is_identifier_selector_selection(ctx, val) {
-                    self.increment_selectors(ctx);
-                }
-            }
+            NdjsonContext::Selecting(ref mut select) => select.key(val),
             NdjsonContext::Writing(writing) => {
                 if !writing.is_at_correct_location(ctx)
                     && ctx.parser_status() == ParserStatus::MapNeedKey
@@ -347,7 +306,8 @@ where
     fn handle_value<T: std::fmt::Display>(&mut self, ctx: &Context, val: T) -> Status {
         match &mut self.context {
             NdjsonContext::Selecting(ref mut select) => {
-                select.new_array_location(ctx);
+                // A scalar is never the selected array, even at the path.
+                select.value_start();
             }
             NdjsonContext::Writing(writing) => {
                 if !writing.is_at_correct_location(ctx)
@@ -372,10 +332,9 @@ where
     fn map_start(&mut self, ctx: &Context) {
         match &mut self.context {
             NdjsonContext::Selecting(ref mut select) => {
-                select.new_array_location(ctx);
-                if select.is_array_index_selector_selection(ctx) {
-                    self.increment_selectors(ctx);
-                }
+                // An object is never the selected array, even at the path.
+                let place = select.value_start();
+                select.push(&place, true);
             }
             NdjsonContext::Writing(writing) => {
                 if !writing.is_at_correct_location(ctx)
@@ -396,6 +355,9 @@ where
     }
 
     fn map_end(&mut self, ctx: &Context) {
+        if let NdjsonContext::Selecting(select) = &mut self.context {
+            select.container_end();
+        }
         if let NdjsonContext::Writing(writing) = &self.context {
             self.sink.put(b"}");
             if writing.is_at_correct_location(ctx) {
@@ -406,34 +368,41 @@ where
 
     fn array_start(&mut self, ctx: &Context) {
         if let NdjsonContext::Selecting(ref mut select) = &mut self.context {
-            select.new_array_location(ctx);
-            if select.is_array_index_selector_selection(ctx) {
-                self.increment_selectors(ctx);
+            let place = select.value_start();
+            if place == Place::Target {
+                // The selected array: write its elements, one per line.
+                // The parser counts this bracket after the callback.
+                let mut writing =
+                    WritingCtx::new(ctx.num_open_braces(), ctx.num_open_brackets() + 1);
+                writing.set_inside_array();
+                self.context = NdjsonContext::Writing(writing);
+                self.found = true;
+                return;
             }
+            select.push(&place, false);
+            return;
         }
 
         if let NdjsonContext::Writing(writing) = &mut self.context {
-            if writing.is_inside_array() {
-                if !writing.is_at_correct_location(ctx)
-                    && ctx.parser_status() == ParserStatus::ArrayNeedVal
-                {
-                    self.sink.put(b",");
-                } else if writing.is_at_correct_location(ctx) {
-                    if writing.is_first_value() {
-                        writing.first()
-                    } else {
-                        self.sink.put(b"\n");
-                    }
+            if !writing.is_at_correct_location(ctx)
+                && ctx.parser_status() == ParserStatus::ArrayNeedVal
+            {
+                self.sink.put(b",");
+            } else if writing.is_at_correct_location(ctx) {
+                if writing.is_first_value() {
+                    writing.first()
+                } else {
+                    self.sink.put(b"\n");
                 }
-                self.sink.put(b"[");
-            } else {
-                writing.set_inside_array();
-                self.found = true;
             }
+            self.sink.put(b"[");
         }
     }
 
     fn array_end(&mut self, ctx: &Context) -> Status {
+        if let NdjsonContext::Selecting(select) = &mut self.context {
+            select.container_end();
+        }
         if let NdjsonContext::Writing(writing) = &self.context {
             // End the last line, if there was one: an empty array writes
             // nothing.
@@ -519,6 +488,8 @@ pub enum Selector {
 }
 
 pub mod selector_parser;
+#[cfg(any(test, kani))]
+mod verify;
 
 pub use self::selector_parser::{SelectorParseError, SelectorParser};
 
@@ -638,9 +609,11 @@ mod tests {
 
     #[test]
     fn test_double_index_selector() {
+        // `foo[1]` is an array holding the object, so the path needs `[0]`
+        // too: selectors follow the document exactly, since 0.1.
         assert_ndjson(
             "{ \"foo\": [[null,\"foo\",\"bar\"], [{ \"bar\": { \"bar\": [{ \"data\": [1,false,null,5.6]}]}}]] }".as_bytes(),
-            vec![Selector::Identifier("foo".to_owned()), Selector::Index(1), Selector::Identifier("bar".to_owned()), Selector::Identifier("bar".to_owned()), Selector::Index(0), Selector::Identifier("data".to_owned())],
+            vec![Selector::Identifier("foo".to_owned()), Selector::Index(1), Selector::Index(0), Selector::Identifier("bar".to_owned()), Selector::Identifier("bar".to_owned()), Selector::Index(0), Selector::Identifier("data".to_owned())],
             "1\nfalse\nnull\n5.6\n".as_bytes()
         );
     }
@@ -650,10 +623,15 @@ mod tests {
         assert_ndjson(
             "{ \"gauss\": [{ \"foo\": null}, [{ \"feynman\": [{ \"foo\": [1, false, \"bar\"]}]}]]}"
                 .as_bytes(),
+            // `gauss[1]` and `feynman` are arrays holding the objects, so
+            // the path names their `[0]`s too: selectors follow the
+            // document exactly, since 0.1.
             vec![
                 Selector::Identifier("gauss".to_owned()),
                 Selector::Index(1),
+                Selector::Index(0),
                 Selector::Identifier("feynman".to_owned()),
+                Selector::Index(0),
                 Selector::Identifier("foo".to_owned()),
             ],
             "1\nfalse\n\"bar\"\n".as_bytes(),

@@ -22,12 +22,18 @@ pattern = ["dep:regex", "yajlish-schema-macros/pattern"]
 serde = ["dep:serde", "yajlish-schema-macros/serde"]
 
 [dev-dependencies]
+bolero = "0.13.7"
 criterion = { version = "0.5", default-features = false }
 pretty_assertions.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
 regex = "1"
 jsonschema = { version = "0.59", default-features = false }
+
+[lints.rust]
+# CI builds with RUSTFLAGS=-Dwarnings, and rustc's check-cfg warns on unknown
+# cfgs. `kani` is set by `cargo kani`, `fuzzing` by `cargo bolero`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }
 
 [[bench]]
 name = "candidates"

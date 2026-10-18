@@ -307,7 +307,8 @@ mod tests {
 
     #[test]
     fn utf8_check_matches_std_fuzz() {
-        bolero::check!().with_type::<Vec<u8>>().for_each(|b| {
+        // Raw bytes, so that the seed corpus is the input.
+        bolero::check!().for_each(|b: &[u8]| {
             assert_eq!(is_utf8(b), std::str::from_utf8(b).is_ok());
         });
     }

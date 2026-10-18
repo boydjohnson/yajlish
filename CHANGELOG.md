@@ -53,6 +53,14 @@
     restores the old behaviour.
   - An empty selected array writes nothing instead of a blank line.
   - The selector parser is hand-written; lalrpop and the build script are gone.
+  - **Breaking:** selectors are a path followed exactly from the root.
+    Before, a step only had to match at the right count of open braces or
+    brackets, so arrays between object steps could be skipped
+    (`d.gauss[1].feynman` matched `{"gauss": [_, [{"feynman": ...}]]}`; now
+    that is `d.gauss[1][0].feynman`), and a match was not tied to the value
+    the previous step matched: `d.a` on `{"a":{"x":[1]}}` wrote `{"x":1]}}`,
+    and `d.a.b` on `{"a":{},"c":{"b":[1]}}` wrote `1` from `c.b`. Both are
+    now `SelectorNotFound`, as is any path whose value is not an array.
 
 ### yajlish-schema 0.1.0
 

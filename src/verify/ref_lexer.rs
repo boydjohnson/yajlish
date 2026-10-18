@@ -192,9 +192,8 @@ fn ref_lexer_matches_logos() {
 
 #[test]
 fn ref_lexer_matches_logos_fuzz() {
-    bolero::check!()
-        .with_type::<Vec<u8>>()
-        .for_each(|b| check_ref_matches_logos(b));
+    // Raw bytes, so that the seed corpus (JSON files) is the input.
+    bolero::check!().for_each(|b: &[u8]| check_ref_matches_logos(b));
 }
 
 #[cfg(test)]

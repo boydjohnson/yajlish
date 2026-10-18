@@ -101,6 +101,8 @@ mod matcher;
 mod num;
 mod runtime;
 mod value;
+#[cfg(any(test, kani))]
+mod verify;
 
 pub use error::SchemaError;
 pub use value::{BuildError, FromValue, Value};

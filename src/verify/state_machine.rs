@@ -240,7 +240,8 @@ macro_rules! harness {
 
         #[test]
         fn $fuzz() {
-            bolero::check!().with_type::<Vec<u8>>().for_each(|input| {
+            // Raw bytes, so that the seed corpus (JSON files) is the input.
+            bolero::check!().for_each(|input: &[u8]| {
                 let input = &input[..input.len().min(FUZZ_BOUND)];
                 bytes_case(input, $check::<FUZZ_BOUND>);
             });
