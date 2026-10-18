@@ -75,6 +75,7 @@ pub struct Context {
     status: ParserStatus,
     num_open_braces: usize,
     num_open_brackets: usize,
+    offset: u64,
 }
 
 impl Default for Context {
@@ -85,6 +86,7 @@ impl Default for Context {
 
             num_open_braces: 0,
             num_open_brackets: 0,
+            offset: 0,
         }
     }
 }
@@ -102,6 +104,17 @@ impl Context {
     #[must_use]
     pub fn num_open_braces(&self) -> usize {
         self.num_open_braces
+    }
+
+    /// The absolute byte offset in the stream of the token that produced
+    /// the current event.
+    #[must_use]
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub(crate) fn set_offset(&mut self, offset: u64) {
+        self.offset = offset;
     }
 
     /// The `ParserStatus`.
@@ -163,6 +176,11 @@ pub trait Handler {
     fn handle_bool(&mut self, ctx: &Context, val: bool) -> Status;
 
     /// Latest parsed value was a string.
+    ///
+    /// `val` is the raw JSON text of the string: the surrounding quotes and
+    /// any escape sequences are kept exactly as they appeared in the input.
+    /// Use `decode_str` to get the string value. Other crates, such as
+    /// `yajlish-ndjson`, rely on the raw form to re-emit strings verbatim.
     fn handle_string(&mut self, ctx: &Context, val: &str) -> Status;
 
     /// Latest parsed value was a left curly brace ({).
@@ -172,6 +190,10 @@ pub trait Handler {
     fn handle_end_map(&mut self, ctx: &Context) -> Status;
 
     /// Latest parsed value was a key to a JSON object.
+    ///
+    /// Like `handle_string`, `key` is raw JSON text with its quotes and
+    /// escapes intact, so `{"foo": 1}` delivers `"\"foo\""`. Two keys that are
+    /// equal after decoding can differ as raw text.
     fn handle_map_key(&mut self, ctx: &Context, key: &str) -> Status;
 
     /// Latest parsed value was a left bracket ([).

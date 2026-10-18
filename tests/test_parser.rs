@@ -267,3 +267,199 @@ fn test_parser_context_map() {
 
     parser.parse(&mut input).unwrap();
 }
+
+/// A reader that hands out `good` bytes, then fails.
+struct FailAfter<'a> {
+    data: &'a [u8],
+    good: usize,
+}
+
+impl std::io::Read for FailAfter<'_> {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        unimplemented!()
+    }
+}
+
+impl std::io::BufRead for FailAfter<'_> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.good == 0 {
+            return Err(std::io::Error::other("boom"));
+        }
+        Ok(&self.data[..self.good.min(self.data.len()).min(3)])
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.data = &self.data[n..];
+        self.good -= n;
+    }
+}
+
+#[test]
+fn test_reader_errors_are_returned() {
+    let input = b"{\"foo\": [1, 2, {\"bar\": null}], \"baz\": \"qux\"}";
+    for good in 0..input.len() {
+        let mut out = vec![];
+        let mut handler = common::mock_handler::MockHandler::new(&mut out);
+        let mut parser = Parser::new(&mut handler);
+        let mut reader = FailAfter { data: input, good };
+        match parser.parse(&mut reader) {
+            Err(yajlish::ParseError::ReadError { offset, .. }) => assert_eq!(offset, good as u64),
+            other => panic!("good = {}: {:?}", good, other),
+        }
+    }
+}
+
+#[test]
+fn test_error_offsets() {
+    let cases: &[(&[u8], u64)] = &[
+        (b"[1, 2, @]", 7),
+        (b"{\"a\": tru}", 6),
+        (b"[\"ok\", \"\xff\"]", 8),
+        (b"[1, 2]]", 6),
+        (b"  [1,\n 01]", 8),
+    ];
+    for (input, offset) in cases {
+        let mut out = vec![];
+        let mut handler = common::mock_handler::MockHandler::new(&mut out);
+        let mut parser = Parser::new(&mut handler);
+        let mut reader = *input;
+        let err = parser
+            .parse(&mut reader)
+            .and_then(|()| parser.finish_parse())
+            .unwrap_err();
+        assert_eq!(
+            err.offset(),
+            *offset,
+            "{:?}: {}",
+            String::from_utf8_lossy(input),
+            err
+        );
+    }
+}
+
+struct Offsets(Vec<u64>);
+
+impl Handler for Offsets {
+    fn handle_null(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_double(&mut self, ctx: &Context, _: f64) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_int(&mut self, ctx: &Context, _: i64) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_bool(&mut self, ctx: &Context, _: bool) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_string(&mut self, ctx: &Context, _: &str) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_start_map(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_end_map(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_map_key(&mut self, ctx: &Context, _: &str) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_start_array(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+    fn handle_end_array(&mut self, ctx: &Context) -> Status {
+        self.0.push(ctx.offset());
+        Status::Continue
+    }
+}
+
+#[test]
+fn test_context_offsets() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser
+        .parse(&mut &b"{\"a\": [1, null], \"b\": \"x\"}"[..])
+        .unwrap();
+    assert_eq!(handler.0, vec![0, 1, 6, 7, 10, 14, 17, 22, 25]);
+}
+
+/// A document cut between tokens continues in the next `parse` call. Before
+/// the parser hardening, the end of the first reader marked the document
+/// complete and the second call read nothing. (A token cut in two is still
+/// lexed as two tokens; that is Plan 4's K3c.)
+#[test]
+fn test_document_continues_across_parse_calls() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser.parse(&mut &b"[1,"[..]).unwrap();
+    parser.parse(&mut &b" 2]"[..]).unwrap();
+    parser.finish_parse().unwrap();
+    assert_eq!(handler.0, vec![0, 1, 4, 5]);
+}
+
+/// A token cut by the end of one `parse` call continues in the next, so a
+/// top-level number only ends at `finish_parse`: more digits could follow.
+#[test]
+fn test_top_level_number_ends_at_finish_parse() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser.parse(&mut &b"1"[..]).unwrap();
+    parser.parse(&mut &b"2"[..]).unwrap();
+    parser.finish_parse().unwrap();
+    assert_eq!(handler.0, vec![0]);
+}
+
+/// `with_max_token_len` bounds a token that is buffered across `parse`
+/// calls, not only within one.
+#[test]
+fn test_max_token_len_across_parse_calls() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler).with_max_token_len(8);
+    let input = b"\"aaaaaaaaaaaaaaaaaaaa\"";
+    let err = input
+        .chunks(1)
+        .map(|byte| parser.parse(&mut &byte[..]))
+        .find_map(Result::err)
+        .expect("the token is longer than 8 bytes");
+    assert!(
+        matches!(err, yajlish::ParseError::MalformedJson { offset: 0, .. }),
+        "{:?}",
+        err
+    );
+}
+
+/// Content after a complete document is an error, even when it arrives in
+/// a later `parse` call. A number there could still grow, so it is only
+/// rejected by `finish_parse`.
+#[test]
+fn test_content_after_document_in_later_call() {
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser.parse(&mut &b"[1]"[..]).unwrap();
+    let err = parser.parse(&mut &b" true"[..]).unwrap_err();
+    assert!(
+        matches!(err, yajlish::ParseError::MalformedJson { offset: 4, .. }),
+        "{:?}",
+        err
+    );
+
+    let mut handler = Offsets(vec![]);
+    let mut parser = Parser::new(&mut handler);
+    parser.parse(&mut &b"[1]"[..]).unwrap();
+    parser.parse(&mut &b" 2"[..]).unwrap();
+    let err = parser.finish_parse().unwrap_err();
+    assert!(
+        matches!(err, yajlish::ParseError::MalformedJson { offset: 4, .. }),
+        "{:?}",
+        err
+    );
+}

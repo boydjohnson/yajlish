@@ -37,13 +37,19 @@ jobs:
       uses: actions-rs/cargo@v1
       with:
         command: check
-        args: --benches
+        args: --workspace --benches
 
     - name: tests
       uses: actions-rs/cargo@v1
       with:
         command: test
         args: --all
+
+    - name: tests with all features
+      uses: actions-rs/cargo@v1
+      with:
+        command: test
+        args: --workspace --all-features
 
   check_fmt_and_docs:
     name: Checking fmt, clippy, and docs
@@ -57,10 +63,21 @@ jobs:
         rustc --version
 
     - name: clippy
-      run: cargo clippy --tests --examples
+      run: cargo clippy --workspace --all-features --tests --examples --benches
 
     - name: fmt
       run: cargo fmt --all -- --check
 
     - name: Docs
-      run: cargo doc --no-deps
+      run: cargo doc --workspace --no-deps
+
+  kani:
+    name: Kani proofs
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+
+    - name: Kani
+      uses: model-checking/kani-github-action@v1
+      with:
+        args: --tests -p yajlish@0.5.0 -Z stubbing --output-format terse

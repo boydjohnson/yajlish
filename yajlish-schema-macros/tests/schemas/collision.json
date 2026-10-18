@@ -1,0 +1,1 @@
+{"type": "object", "properties": {"a": {"title": "Thing", "type": "object", "properties": {"x": {"type": "integer"}}}, "b": {"title": "Thing", "type": "object", "properties": {"y": {"type": "integer"}}}}}

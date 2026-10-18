@@ -72,9 +72,12 @@
 //! ```
 
 mod common;
-#[cfg(feature = "ndjson")]
-pub mod ndjson_handler;
+mod decode;
+mod lexer;
 mod parser;
+#[cfg(any(test, kani))]
+mod verify;
 
 pub use common::{Context, Enclosing, Handler, ParserStatus, Status};
-pub use parser::Parser;
+pub use decode::{decode_str, DecodeError};
+pub use parser::{ParseError, Parser};

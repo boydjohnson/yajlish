@@ -1,5 +1,6 @@
 use yajlish::Parser;
 
+pub mod chunked;
 pub mod mock_handler;
 
 use mock_handler::MockHandler;
@@ -33,20 +34,4 @@ pub fn test_fixture(p: &str, s: &str) {
     let output = read_output_to_bytes(p, s);
 
     assert_output_equals(input.as_bytes(), output.as_bytes());
-}
-
-#[cfg(feature = "ndjson")]
-#[allow(unused)]
-pub fn test_ndjson_fixture(p: &str, s: &str, selectors: Vec<yajlish::ndjson_handler::Selector>) {
-    let input = read_input_to_bytes(p, s);
-    let output = read_output_to_bytes(p, s);
-
-    let mut buf = vec![];
-
-    let mut handler = yajlish::ndjson_handler::NdJsonHandler::new(&mut buf, selectors);
-    let mut parser = Parser::new(&mut handler);
-
-    assert_eq!(parser.parse(&mut input.as_bytes()), Ok(()));
-
-    assert_eq!(output.as_bytes(), buf.as_slice());
 }

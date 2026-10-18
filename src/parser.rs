@@ -19,15 +19,21 @@
 
 use crate::{
     common::{Enclosing, ParserStatus},
+    lexer::{LexBuffer, Lexed, StreamLexer, Token, DEFAULT_MAX_TOKEN_LEN},
     Context, Handler, Status,
 };
-use json_tools::{Buffer, BufferType, Lexer, Token, TokenType};
 use std::io::BufRead;
 
 /// Main Parser struct.
 pub struct Parser<'a, H> {
     handler: &'a mut H,
     context: Context,
+    max_token_len: usize,
+    /// Input not lexed yet, kept across `parse` calls: a token cut off by
+    /// the end of one call's reader continues in the next.
+    pending: LexBuffer,
+    /// The last `parse` call stopped because the handler returned `Abort`.
+    aborted: bool,
 }
 
 impl<'a, H: Handler> Parser<'a, H> {
@@ -36,336 +42,394 @@ impl<'a, H: Handler> Parser<'a, H> {
         Parser {
             handler,
             context: Context::default(),
+            max_token_len: DEFAULT_MAX_TOKEN_LEN,
+            pending: LexBuffer::default(),
+            aborted: false,
         }
+    }
+
+    /// Cap the length in bytes of a single token (a string, key or number).
+    /// A longer token is a `MalformedJson` error instead of unbounded
+    /// buffering. The default is 64 MiB.
+    #[must_use]
+    pub fn with_max_token_len(mut self, max_token_len: usize) -> Self {
+        self.max_token_len = max_token_len;
+        self
     }
 
     /// Parse until Handler method returns Abort or EOF.
     ///
+    /// Each token is checked against the JSON grammar before the handler
+    /// sees it, so the handler is only ever called for a prefix of a valid
+    /// document, and a handler that returns `Status::Abort` always gets
+    /// `Ok(())` back from this call.
+    ///
+    /// The end of `read` is not the end of the document: a later `parse`
+    /// call on the same `Parser` continues where this one stopped, even in
+    /// the middle of a token. A token that could still grow when `read`
+    /// ends (a number, or a cut-off string or keyword) stays buffered and
+    /// its event comes from a later call, so a document that is a bare
+    /// number, like `12`, only delivers its event from `finish_parse`.
+    /// Call `finish_parse` once all input is read.
+    ///
     /// # Errors
     ///    - Will return an error Result if the JSON is malformed, or if the underlying
-    ///   Reader returns an error.
-    pub fn parse<B: BufRead>(&mut self, read: &mut B) -> Result<(), ParseError> {
-        let context = &mut self.context;
+    ///      Reader returns an error.
+    pub fn parse<B: BufRead + ?Sized>(&mut self, read: &mut B) -> Result<(), ParseError> {
+        let mut pending = std::mem::take(&mut self.pending);
+        let mut lexer = StreamLexer::resume(read, &mut pending, self.max_token_len, false);
+        let result = self.parse_source(&mut lexer);
+        self.pending = pending;
+        result
+    }
 
-        let mut lexer = Lexer::new(Wrapper(read), BufferType::Bytes(20));
+    /// The parser state machine over any source of tokens. `parse` feeds it
+    /// a `StreamLexer`; the Kani harnesses feed it token sequences directly,
+    /// since Kani cannot get through the lexer.
+    ///
+    /// Every token is checked against the grammar before its handler
+    /// method is called, so the handler only ever sees a prefix of a valid
+    /// document, and a token that is out of place is a `MalformedJson`
+    /// error at its offset with no callback.
+    pub(crate) fn parse_source<S: TokenSource + ?Sized>(
+        &mut self,
+        lexer: &mut S,
+    ) -> Result<(), ParseError> {
+        self.aborted = false;
+        let context = &mut self.context;
 
         while !matches!(
             context.parser_status(),
             ParserStatus::ParseComplete | ParserStatus::LexicalError
         ) {
-            let status = match lexer.next() {
-                Some(Token {
-                    kind: TokenType::BracketClose,
-                    ..
-                }) => {
+            let (kind, bytes, offset) = match lexer.next_token()? {
+                Lexed::Token {
+                    kind,
+                    bytes,
+                    offset,
+                } => {
+                    context.set_offset(offset);
+                    (kind, bytes, offset)
+                }
+                Lexed::Eof => break,
+            };
+
+            let status = context.parser_status();
+            let takes_value = matches!(
+                status,
+                ParserStatus::Start
+                    | ParserStatus::ArrayStart
+                    | ParserStatus::ArrayNeedVal
+                    | ParserStatus::MapNeedVal
+            );
+
+            let handled = match kind {
+                Token::LeftBracket | Token::LeftBrace => {
+                    if !takes_value {
+                        return Err(unexpected(context, kind, offset));
+                    }
+                    if kind == Token::LeftBracket {
+                        let status = self.handler.handle_start_array(context);
+                        context.add_enclosing(Enclosing::LeftBracket);
+                        context.inc_brackets();
+                        context.update_status(ParserStatus::ArrayStart);
+                        status
+                    } else {
+                        let status = self.handler.handle_start_map(context);
+                        context.add_enclosing(Enclosing::LeftBrace);
+                        context.inc_braces();
+                        context.update_status(ParserStatus::MapStart);
+                        status
+                    }
+                }
+                Token::RightBracket => {
+                    // `ArrayStart` and `ArrayGotVal` only occur directly
+                    // inside an array, so this `]` closes it.
+                    if !matches!(status, ParserStatus::ArrayStart | ParserStatus::ArrayGotVal) {
+                        return Err(unexpected(context, kind, offset));
+                    }
                     let status = self.handler.handle_end_array(context);
-                    if context.last_enclosing() == Some(Enclosing::LeftBracket) {
-                        context.remove_last_enclosing();
-                        context.dec_brackets();
-                    } else {
-                        return Err(ParseError::MalformedJson(format!("Parsed right bracket without a corresponding left bracket: braces: {}, brackets: {}", context.num_open_braces(), context.num_open_brackets())));
-                    }
-
-                    if context.last_enclosing() == Some(Enclosing::LeftBrace) {
-                        context.update_status(ParserStatus::MapGotVal);
-                    } else if context.last_enclosing() == Some(Enclosing::LeftBracket) {
-                        context.update_status(ParserStatus::ArrayGotVal);
-                    } else {
-                        context.update_status(ParserStatus::GotValue);
-                    }
-                    Some(status)
+                    context.remove_last_enclosing();
+                    context.dec_brackets();
+                    after_value(context);
+                    status
                 }
-                Some(Token {
-                    kind: TokenType::CurlyClose,
-                    ..
-                }) => {
+                Token::RightBrace => {
+                    if !matches!(status, ParserStatus::MapStart | ParserStatus::MapGotVal) {
+                        return Err(unexpected(context, kind, offset));
+                    }
                     let status = self.handler.handle_end_map(context);
-
-                    if context.last_enclosing() == Some(Enclosing::LeftBrace) {
-                        context.remove_last_enclosing();
-                        context.dec_braces();
-                    } else {
-                        context.update_status(ParserStatus::LexicalError);
+                    context.remove_last_enclosing();
+                    context.dec_braces();
+                    after_value(context);
+                    status
+                }
+                Token::Comma => {
+                    match status {
+                        ParserStatus::MapGotVal => context.update_status(ParserStatus::MapNeedKey),
+                        ParserStatus::ArrayGotVal => {
+                            context.update_status(ParserStatus::ArrayNeedVal)
+                        }
+                        _ => return Err(unexpected(context, kind, offset)),
                     }
-
-                    if context.last_enclosing() == Some(Enclosing::LeftBrace) {
-                        context.update_status(ParserStatus::MapGotVal);
-                    } else if context.last_enclosing() == Some(Enclosing::LeftBracket) {
-                        context.update_status(ParserStatus::ArrayGotVal);
-                    } else {
-                        context.update_status(ParserStatus::GotValue);
+                    Status::Continue
+                }
+                Token::Colon => {
+                    if status != ParserStatus::MapSep {
+                        return Err(unexpected(context, kind, offset));
                     }
-
-                    Some(status)
+                    context.update_status(ParserStatus::MapNeedVal);
+                    Status::Continue
                 }
-                Some(Token {
-                    kind: TokenType::BracketOpen,
-                    ..
-                }) => {
-                    let status = self.handler.handle_start_array(context);
-                    context.add_enclosing(Enclosing::LeftBracket);
-                    context.inc_brackets();
-                    context.update_status(ParserStatus::ArrayStart);
-                    Some(status)
-                }
-                Some(Token {
-                    kind: TokenType::CurlyOpen,
-                    ..
-                }) => {
-                    let status = self.handler.handle_start_map(context);
-                    context.add_enclosing(Enclosing::LeftBrace);
-                    context.inc_braces();
-                    context.update_status(ParserStatus::MapStart);
-
-                    Some(status)
-                }
-                Some(Token {
-                    kind: TokenType::Null,
-                    ..
-                }) => {
-                    let status = self.handler.handle_null(context);
-
-                    update_context_status_value(context);
-
-                    Some(status)
-                }
-                Some(Token {
-                    kind: TokenType::Number,
-                    buf,
-                }) => {
-                    let status = match buf {
-                        Buffer::MultiByte(b) => match std::str::from_utf8(&b) {
-                            Ok(s) => match s.parse::<i64>() {
-                                Ok(num) => self.handler.handle_int(context, num),
-                                Err(_) => match s.parse::<f64>() {
-                                    Ok(num) => self.handler.handle_double(context, num),
-                                    Err(_) => panic!("Could not parse number as i64 or f64"),
-                                },
-                            },
-                            Err(e) => return Err(ParseError::MalformedJson(e.to_string())),
-                        },
-                        Buffer::Span(_) => panic!("Unexpected Span when handling number"),
-                    };
-
-                    update_context_status_value(context);
-
-                    Some(status)
-                }
-                Some(Token {
-                    kind: TokenType::String,
-                    buf,
-                }) => {
-                    let string = match buf {
-                        Buffer::MultiByte(ref b) => match std::str::from_utf8(b) {
-                            Ok(s) => s,
-                            Err(e) => return Err(ParseError::MalformedJson(e.to_string())),
-                        },
-                        Buffer::Span(_) => panic!("Unexpected span in string buffer"),
-                    };
-
-                    if context.parser_status() == ParserStatus::ArrayNeedVal
-                        || context.parser_status() == ParserStatus::ArrayStart
-                    {
-                        let status = self.handler.handle_string(context, string);
-                        context.update_status(ParserStatus::ArrayGotVal);
-                        Some(status)
-                    } else if context.parser_status() == ParserStatus::MapNeedVal {
-                        let status = self.handler.handle_string(context, string);
-                        context.update_status(ParserStatus::MapGotVal);
-                        Some(status)
-                    } else if context.parser_status() == ParserStatus::Start {
-                        let status = self.handler.handle_string(context, string);
-                        context.update_status(ParserStatus::GotValue);
-                        Some(status)
-                    } else if context.parser_status() == ParserStatus::MapNeedKey
-                        || context.parser_status() == ParserStatus::MapStart
-                    {
+                Token::String => {
+                    let is_key =
+                        matches!(status, ParserStatus::MapStart | ParserStatus::MapNeedKey);
+                    if !is_key && !takes_value {
+                        return Err(unexpected(context, kind, offset));
+                    }
+                    let string = std::str::from_utf8(bytes).map_err(|e| ParseError::Utf8Error {
+                        offset: offset + e.valid_up_to() as u64,
+                        msg: e.to_string(),
+                    })?;
+                    if is_key {
                         let status = self.handler.handle_map_key(context, string);
                         context.update_status(ParserStatus::MapSep);
-                        Some(status)
+                        status
                     } else {
-                        context.update_status(ParserStatus::LexicalError);
-                        None
+                        let status = self.handler.handle_string(context, string);
+                        after_value(context);
+                        status
                     }
                 }
-                Some(Token {
-                    kind: TokenType::BooleanTrue,
-                    ..
-                }) => {
-                    let status = self.handler.handle_bool(context, true);
-
-                    update_context_status_value(context);
-
-                    Some(status)
-                }
-                Some(Token {
-                    kind: TokenType::BooleanFalse,
-                    ..
-                }) => {
-                    let status = self.handler.handle_bool(context, false);
-
-                    update_context_status_value(context);
-
-                    Some(status)
-                }
-                Some(Token {
-                    kind: TokenType::Comma,
-                    ..
-                }) => {
-                    if context.parser_status() == ParserStatus::MapGotVal {
-                        context.update_status(ParserStatus::MapNeedKey);
-                    } else if context.parser_status() == ParserStatus::ArrayGotVal {
-                        context.update_status(ParserStatus::ArrayNeedVal);
-                    } else {
-                        context.update_status(ParserStatus::LexicalError);
+                Token::Null | Token::True | Token::False | Token::Int | Token::Number => {
+                    if !takes_value {
+                        return Err(unexpected(context, kind, offset));
                     }
-
-                    None
-                }
-                Some(Token {
-                    kind: TokenType::Colon,
-                    ..
-                }) => {
-                    if context.parser_status() == ParserStatus::MapSep {
-                        context.update_status(ParserStatus::MapNeedVal);
-                    }
-
-                    None
-                }
-                Some(Token {
-                    kind: TokenType::Invalid,
-                    buf,
-                }) => {
-                    return Err(ParseError::MalformedJson(format!("{:?}", buf)));
-                }
-                None => {
-                    self.context.update_status(ParserStatus::ParseComplete);
-                    break;
+                    let status = match kind {
+                        Token::Null => self.handler.handle_null(context),
+                        Token::True => self.handler.handle_bool(context, true),
+                        Token::False => self.handler.handle_bool(context, false),
+                        _ => {
+                            let text =
+                                std::str::from_utf8(bytes).map_err(|e| ParseError::Utf8Error {
+                                    offset: offset + e.valid_up_to() as u64,
+                                    msg: e.to_string(),
+                                })?;
+                            match number_value(kind, text, offset)? {
+                                Number::Int(num) => self.handler.handle_int(context, num),
+                                Number::Double(num) => self.handler.handle_double(context, num),
+                            }
+                        }
+                    };
+                    after_value(context);
+                    status
                 }
             };
 
-            if status == Some(Status::Abort) {
+            if handled == Status::Abort {
+                self.aborted = true;
                 return Ok(());
             }
         }
         if self.context.parser_status() == ParserStatus::LexicalError {
-            return Err(ParseError::MalformedJson(format!(
-                "Parse failed due to malformed json: open braces: {}, open brackets: {}",
-                self.context.num_open_braces(),
-                self.context.num_open_brackets()
-            )));
-        }
-
-        Ok(())
-    }
-
-    /// Parse has already returned from an EOF. This method checks that
-    /// there were the right number of closing braces and brackets.
-    ///
-    /// # Errors
-    ///    - Returns an error Result if the JSON was malformed.
-    pub fn finish_parse(self) -> Result<(), ParseError> {
-        if self.context.parser_status() != ParserStatus::ParseComplete {
-            return Err(ParseError::MalformedJson(
-                "Did not reach a ParseComplete status".to_owned(),
+            return Err(ParseError::malformed(
+                self.context.offset(),
+                "Parse failed due to malformed json",
             ));
         }
-        if self.context.num_open_braces() != 0 {
-            return Err(ParseError::MalformedJson(format!(
-                "Number of open braces: {}, number of open brackets: {}",
-                self.context.num_open_braces(),
-                self.context.num_open_brackets()
-            )));
-        }
-        if self.context.num_open_brackets() != 0 {
-            return Err(ParseError::MalformedJson(format!(
-                "Number of open braces: {}, number of open brackets: {}",
-                self.context.num_open_braces(),
-                self.context.num_open_brackets()
-            )));
-        }
 
+        Ok(())
+    }
+
+    /// The end of the input. Delivers the event of a token that was still
+    /// pending at the end of the last `parse` call (a top-level number like
+    /// `12` only ends here, since more digits could have followed), then
+    /// checks that the input was exactly one complete JSON value: every
+    /// brace and bracket closed, and not empty.
+    ///
+    /// If the last `parse` call ended because the handler returned
+    /// `Status::Abort`, no more events are delivered; the checks still run.
+    ///
+    /// # Errors
+    ///    - Returns an error Result if the JSON was malformed or incomplete.
+    pub fn finish_parse(mut self) -> Result<(), ParseError> {
+        if !self.aborted {
+            let mut pending = std::mem::take(&mut self.pending);
+            let mut no_more: &[u8] = &[];
+            let mut lexer =
+                StreamLexer::resume(&mut no_more, &mut pending, self.max_token_len, true);
+            let result = self.parse_source(&mut lexer);
+            self.pending = pending;
+            result?;
+        }
+        self.finish_checks()
+    }
+
+    /// `finish_parse`'s checks, once every token has been through
+    /// `parse_source`.
+    pub(crate) fn finish_checks(mut self) -> Result<(), ParseError> {
+        let end = self.pending.end();
+        if self.context.num_open_braces() != 0 || self.context.num_open_brackets() != 0 {
+            return Err(ParseError::malformed(
+                end,
+                format!(
+                    "Number of open braces: {}, number of open brackets: {}",
+                    self.context.num_open_braces(),
+                    self.context.num_open_brackets()
+                ),
+            ));
+        }
+        if self.context.parser_status() != ParserStatus::GotValue {
+            return Err(ParseError::malformed(
+                end,
+                "Did not reach a ParseComplete status",
+            ));
+        }
+        self.context.update_status(ParserStatus::ParseComplete);
         Ok(())
     }
 }
 
-/// `ParseError`
-#[derive(PartialEq, Eq)]
-pub enum ParseError {
-    /// Bytes can't be decoded as UTF-8 to a string.
-    Utf8Error(String),
-    /// The json is malformed in some way, missing closing brace, bracket, or
-    /// a value can't be parsed due to being malformed.
-    MalformedJson(String),
-    /// Error of the underlying Reader.
-    ReadError(String),
+/// Where `Parser::parse_source` gets its tokens.
+pub(crate) trait TokenSource {
+    /// The next token, or `Eof`.
+    fn next_token(&mut self) -> Result<Lexed<'_>, ParseError>;
 }
 
-impl std::error::Error for ParseError {
-    fn description(&self) -> &str {
-        match self {
-            ParseError::Utf8Error(ref msg)
-            | ParseError::MalformedJson(ref msg)
-            | ParseError::ReadError(ref msg) => msg,
+impl<R: BufRead + ?Sized, S: std::borrow::BorrowMut<LexBuffer>> TokenSource
+    for StreamLexer<'_, R, S>
+{
+    fn next_token(&mut self) -> Result<Lexed<'_>, ParseError> {
+        self.next()
+    }
+}
+
+/// Why a parse failed, with the absolute byte offset into the stream where
+/// the problem was found.
+///
+/// Offsets count every byte read by every `parse` call on the same
+/// `Parser`. For errors found by `finish_parse`, the offset is the end of
+/// the input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParseError {
+    /// A string's bytes are not valid UTF-8.
+    Utf8Error {
+        /// Offset of the first invalid byte.
+        offset: u64,
+        /// Description of the problem.
+        msg: String,
+    },
+    /// The json is malformed in some way: a byte sequence that is not a JSON
+    /// token, a token in the wrong place, or missing closing braces or
+    /// brackets.
+    MalformedJson {
+        /// Offset of the offending token.
+        offset: u64,
+        /// Description of the problem.
+        msg: String,
+    },
+    /// The underlying reader returned an error.
+    ReadError {
+        /// Offset of the first byte that could not be read.
+        offset: u64,
+        /// The reader's error message.
+        msg: String,
+    },
+}
+
+impl ParseError {
+    pub(crate) fn malformed(offset: u64, msg: impl Into<String>) -> Self {
+        ParseError::MalformedJson {
+            offset,
+            msg: msg.into(),
         }
     }
 
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        None
+    /// The byte offset in the stream where the error was found.
+    #[must_use]
+    pub fn offset(&self) -> u64 {
+        match self {
+            ParseError::Utf8Error { offset, .. }
+            | ParseError::MalformedJson { offset, .. }
+            | ParseError::ReadError { offset, .. } => *offset,
+        }
+    }
+
+    /// The description of the error, without the offset.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            ParseError::Utf8Error { msg, .. }
+            | ParseError::MalformedJson { msg, .. }
+            | ParseError::ReadError { msg, .. } => msg,
+        }
     }
 }
+
+impl std::error::Error for ParseError {}
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::Utf8Error(ref msg) => {
-                write!(f, "Error converting bytes to UTF-8 encoded string: {}", msg)
+            ParseError::Utf8Error { offset, msg } => write!(
+                f,
+                "Error converting bytes to UTF-8 encoded string at byte {}: {}",
+                offset, msg
+            ),
+            ParseError::MalformedJson { offset, msg } => {
+                write!(f, "Error: Malformed Json at byte {}: {}", offset, msg)
             }
-            ParseError::MalformedJson(ref msg) => write!(f, "Error: Malformed Json: {}", msg),
-            ParseError::ReadError(ref msg) => write!(f, "Error: Read Error: {}", msg),
+            ParseError::ReadError { offset, msg } => {
+                write!(f, "Error: Read Error at byte {}: {}", offset, msg)
+            }
         }
     }
 }
 
-impl std::fmt::Debug for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
-    }
+/// The value of a number token.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Number {
+    Int(i64),
+    Double(f64),
 }
 
-impl From<std::io::Error> for ParseError {
-    fn from(other: std::io::Error) -> Self {
-        ParseError::ReadError(other.to_string())
-    }
-}
-
-fn update_context_status_value(context: &mut Context) {
-    if context.parser_status() == ParserStatus::ArrayNeedVal
-        || context.parser_status() == ParserStatus::ArrayStart
-    {
-        context.update_status(ParserStatus::ArrayGotVal);
-    } else if context.parser_status() == ParserStatus::MapNeedVal {
-        context.update_status(ParserStatus::MapGotVal);
-    } else if context.parser_status() == ParserStatus::Start {
-        context.update_status(ParserStatus::GotValue);
-    } else {
-        context.update_status(ParserStatus::LexicalError);
-    }
-}
-
-struct Wrapper<'a>(&'a mut dyn BufRead);
-
-impl<'a> Iterator for Wrapper<'a> {
-    type Item = u8;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let buffer = self.0.fill_buf().ok();
-        match buffer.map(|b| b.first()).flatten().copied() {
-            Some(b) => {
-                self.0.consume(1);
-                Some(b)
-            }
-            None => None,
+/// The value of an `Int` or `Number` token whose text is `text`, found at
+/// `offset`. Kept out of `parse_tokens` so that Kani harnesses can stub it:
+/// float parsing is far too large to model check.
+pub(crate) fn number_value(kind: Token, text: &str, offset: u64) -> Result<Number, ParseError> {
+    if kind == Token::Int {
+        if let Ok(num) = text.parse::<i64>() {
+            return Ok(Number::Int(num));
         }
     }
+    // An `Int` that overflows i64 falls back to f64, as before.
+    match text.parse::<f64>() {
+        Ok(num) => Ok(Number::Double(num)),
+        Err(e) => Err(ParseError::malformed(
+            offset,
+            format!("invalid number {:?}: {}", text, e),
+        )),
+    }
+}
+
+/// After a complete value: the enclosing container now has a value, or
+/// the document is complete.
+fn after_value(context: &mut Context) {
+    context.update_status(match context.last_enclosing() {
+        Some(Enclosing::LeftBrace) => ParserStatus::MapGotVal,
+        Some(Enclosing::LeftBracket) => ParserStatus::ArrayGotVal,
+        None => ParserStatus::GotValue,
+    });
+}
+
+/// `kind` is not allowed in the current status. The parse stops here, so
+/// a later `parse` call returns this same failure.
+fn unexpected(context: &mut Context, kind: Token, offset: u64) -> ParseError {
+    let status = context.parser_status();
+    context.update_status(ParserStatus::LexicalError);
+    ParseError::malformed(
+        offset,
+        format!("unexpected {:?} in state {:?}", kind, status),
+    )
 }

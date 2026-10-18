@@ -1,0 +1,18 @@
+[package]
+name = "yajlish-ndjson"
+version = "0.1.0"
+description = "Convert a JSON array inside a JSON document into newline-delimited JSON, streaming"
+keywords = ["json", "ndjson", "streaming"]
+categories = ["parsing"]
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[dependencies]
+yajlish = { path = "..", version = "0.5" }
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+proptest.workspace = true
+serde_json.workspace = true

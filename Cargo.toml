@@ -1,29 +1,57 @@
-[package]
-name = "yajlish"
-version = "0.4.0"
+[workspace]
+resolver = "2"
+members = [".", "yajlish-ndjson", "yajlish-schema", "yajlish-schema-macros"]
+
+[workspace.package]
 authors = ["Boyd Johnson <johnson.boyd@gmail.com>"]
 license = "Apache-2.0"
-description = "An event-based json parser with json-ndjson parser"
 repository = "https://github.com/boydjohnson/yajlish"
-readme = "README.md"
+edition = "2018"
+
+[workspace.dependencies]
+pretty_assertions = "^0.6"
+proptest = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[package]
+name = "yajlish"
+version = "0.5.0"
+description = "An event-based json parser"
 keywords = ["json", "parser", "event-based"]
 categories = ["parsing"]
-edition = "2018"
 documentation = "https://docs.rs/yajlish"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
 
 [dependencies]
-json-tools = "^1.1"
-lalrpop-util = { version = "0.19", optional = true }
+logos = "0.16"
+
+# Under `cargo kani` only: logos's default codegen is a set of mutually
+# tail-calling state functions, which CBMC unrolls as recursion on every
+# path and cannot finish even for 2-byte inputs. The state-machine codegen
+# is one loop over a `match`, the same automaton.
+[target.'cfg(kani)'.dependencies]
+logos = { version = "0.16", features = ["state_machine_codegen"] }
 
 [dev-dependencies]
-pretty_assertions = "^0.6"
+bolero = "0.13.7"
+criterion = { version = "0.5", default-features = false }
+pretty_assertions.workspace = true
+proptest.workspace = true
+serde_json.workspace = true
+# The previous release, built on json-tools, to compare against in benches/.
+yajlish_04 = { package = "yajlish", version = "0.4" }
 
-[build-dependencies]
-lalrpop = { version = "0.19", optional = true }
+[lints.rust]
+# CI builds with RUSTFLAGS=-Dwarnings, and rustc's check-cfg warns on unknown
+# cfgs. `kani` is set by `cargo kani`, `fuzzing` by `cargo bolero`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }
 
-
-[features]
-ndjson = ["lalrpop", "lalrpop-util"]
+[[bench]]
+name = "parse"
+harness = false

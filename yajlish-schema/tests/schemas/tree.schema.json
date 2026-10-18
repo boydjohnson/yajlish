@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A labelled tree.",
+  "type": "object",
+  "required": ["label"],
+  "properties": {
+    "label": { "type": "string", "minLength": 1 },
+    "weight": { "type": ["number", "null"], "minimum": 0 },
+    "color": { "enum": ["red", "green", "light-blue"] },
+    "parent": { "$ref": "#" },
+    "children": { "type": "array", "items": { "$ref": "#" }, "maxItems": 4 },
+    "shape": {
+      "oneOf": [
+        { "title": "Circle", "type": "object", "required": ["radius"],
+          "properties": { "radius": { "type": "number", "exclusiveMinimum": 0 } },
+          "additionalProperties": false },
+        { "title": "Rect", "type": "object", "required": ["w", "h"],
+          "properties": { "w": { "type": "integer" }, "h": { "type": "integer" } },
+          "additionalProperties": false },
+        { "type": "string" }
+      ]
+    },
+    "pair": {
+      "type": "array",
+      "prefixItems": [{ "type": "string" }, { "type": "integer", "multipleOf": 2 }],
+      "items": false,
+      "minItems": 2
+    },
+    "tags": {
+      "type": "object",
+      "additionalProperties": { "type": "integer" }
+    },
+    "base": {
+      "allOf": [
+        { "$ref": "#/$defs/named" },
+        { "type": "object", "properties": { "id": { "type": "integer" } }, "required": ["id"] }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "named": {
+      "type": "object",
+      "properties": { "name": { "type": "string" } },
+      "required": ["name"]
+    }
+  }
+}
