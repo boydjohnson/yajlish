@@ -110,7 +110,6 @@ fn ndjson_never_panics_fuzz() {
 }
 
 /// A JSON value chosen by `choices`, nesting at most `depth` more levels.
-/// Doubles are non-integral so that they print back as doubles.
 #[cfg(test)]
 fn gen_value(choices: &mut impl Iterator<Item = u8>, depth: u32) -> serde_json::Value {
     use serde_json::Value;
@@ -120,7 +119,9 @@ fn gen_value(choices: &mut impl Iterator<Item = u8>, depth: u32) -> serde_json::
         1 => Value::Bool(c & 0x10 != 0),
         2 => Value::from(i64::from(c) - 128),
         3 => Value::from(i64::MIN + i64::from(c)),
-        4 => Value::from(f64::from(c) + 0.5),
+        // Integral doubles too: numbers are copied as `serde_json` spelled
+        // them (`1.0`), so they stay doubles.
+        4 => Value::from([0.5, 0.0, 1e300, -1e-300][usize::from(c >> 4) % 4] + f64::from(c)),
         5 => Value::from(["", "a\"b", "\u{e9}\\n", "\u{1F600}", "\u{1}"][usize::from(c) % 5]),
         6 if depth > 0 => {
             let n = choices.next().unwrap_or(0) % 4;
@@ -209,6 +210,144 @@ fn ndjson_lines_match_elements() {
     bolero::check!()
         .with_type::<(Vec<u8>, bool)>()
         .for_each(|(choices, pretty)| check_lines_match_elements(choices, *pretty));
+}
+
+/// RFC 8259 number text chosen by `choices`: optional `-`, an integer
+/// part without leading zeros, an optional fraction and an optional
+/// exponent of either case and any sign, with up to 24 mantissa digits and
+/// 4 exponent digits, so values go past `i64`, `f64` precision and `f64`
+/// range.
+#[cfg(test)]
+fn gen_number(choices: &mut impl Iterator<Item = u8>, out: &mut String) {
+    fn digits(out: &mut String, n: u8, next: &mut impl FnMut() -> u8) {
+        for _ in 0..n {
+            out.push(char::from(b'0' + next() % 10));
+        }
+    }
+    let mut next = || choices.next().unwrap_or(0);
+    let form = next();
+    if form & 1 != 0 {
+        out.push('-');
+    }
+    let n = next() % 13;
+    if n == 0 {
+        out.push('0');
+    } else {
+        out.push(char::from(b'1' + next() % 9));
+        digits(out, n - 1, &mut next);
+    }
+    if form & 2 != 0 {
+        out.push('.');
+        let n = 1 + next() % 12;
+        digits(out, n, &mut next);
+    }
+    if form & 4 != 0 {
+        out.push(if form & 8 != 0 { 'E' } else { 'e' });
+        out.push_str(["", "+", "-"][usize::from(form >> 4) % 3]);
+        let n = 1 + next() % 4;
+        digits(out, n, &mut next);
+    }
+}
+
+/// The text of a JSON value chosen by `choices`, nesting at most `depth`
+/// more levels, with whitespace between tokens. Appends to `text`, and the
+/// same value without the whitespace to `compact`.
+#[cfg(test)]
+fn gen_text(
+    choices: &mut impl Iterator<Item = u8>,
+    depth: u32,
+    text: &mut String,
+    compact: &mut String,
+) {
+    let c = choices.next().unwrap_or(0);
+    let ws = ["", " ", "\n  ", "\t"][usize::from(c >> 6)];
+    fn both(s: &str, text: &mut String, compact: &mut String) {
+        text.push_str(s);
+        compact.push_str(s);
+    }
+    match c % 5 {
+        0 => both(
+            ["null", "true", "false", "\"1.0\""][usize::from(c >> 3) % 4],
+            text,
+            compact,
+        ),
+        3 if depth > 0 => {
+            both("[", text, compact);
+            for i in 0..choices.next().unwrap_or(0) % 4 {
+                if i > 0 {
+                    text.push_str(ws);
+                    both(",", text, compact);
+                }
+                text.push_str(ws);
+                gen_text(choices, depth - 1, text, compact);
+            }
+            text.push_str(ws);
+            both("]", text, compact);
+        }
+        4 if depth > 0 => {
+            both("{", text, compact);
+            for i in 0..choices.next().unwrap_or(0) % 4 {
+                if i > 0 {
+                    both(",", text, compact);
+                }
+                text.push_str(ws);
+                both(&format!("\"k{}\"", i), text, compact);
+                text.push_str(ws);
+                both(":", text, compact);
+                text.push_str(ws);
+                gen_text(choices, depth - 1, text, compact);
+            }
+            text.push_str(ws);
+            both("}", text, compact);
+        }
+        _ => {
+            let mut number = String::new();
+            gen_number(choices, &mut number);
+            both(&number, text, compact);
+        }
+    }
+}
+
+/// With the selector `d.a`, each output line is the element's text with
+/// the whitespace removed, byte for byte: every number in the selected
+/// array, at any depth, is written as the input spelled it (Plan 5).
+/// Numbers before and after the array are skipped. Read whole and split in
+/// two.
+#[test]
+fn numbers_are_copied_verbatim() {
+    bolero::check!()
+        .with_type::<(Vec<u8>, u16)>()
+        .for_each(|(choices, split)| {
+            let mut choices = choices.iter().copied();
+            let mut text = String::from("{\"before\": ");
+            gen_text(&mut choices, 2, &mut text, &mut String::new());
+            text.push_str(", \"a\": [");
+            let mut expected = String::new();
+            for i in 0..choices.next().unwrap_or(0) % 5 {
+                if i > 0 {
+                    text.push_str(", ");
+                }
+                gen_text(&mut choices, 3, &mut text, &mut expected);
+                expected.push('\n');
+            }
+            text.push_str("], \"after\": ");
+            gen_text(&mut choices, 2, &mut text, &mut String::new());
+            text.push('}');
+
+            let split = usize::from(*split) % (text.len() + 1);
+            for cuts in [None, Some(split)] {
+                let selectors = SelectorParser::new().parse("d.a").unwrap();
+                let mut handler = NdJsonHandler::new(vec![], selectors);
+                let mut parser = Parser::new(&mut handler);
+                let bytes = text.as_bytes();
+                let (first, second) = bytes.split_at(cuts.unwrap_or(bytes.len()));
+                parser.parse(&mut &first[..]).unwrap();
+                parser.parse(&mut &second[..]).unwrap();
+                parser.finish_parse().unwrap();
+                let out = String::from_utf8(handler.finish().unwrap()).unwrap();
+                assert_eq!(out, expected, "{}", text);
+            }
+        });
 }
 
 #[cfg(test)]

@@ -24,6 +24,7 @@ yajlish@0.5.0 verify::state_machine::parser_never_panics_fuzz
 yajlish@0.5.0 verify::tests::utf8_check_matches_std_fuzz
 yajlish-ndjson verify::ndjson_lines_match_elements
 yajlish-ndjson verify::ndjson_never_panics_fuzz
+yajlish-ndjson verify::numbers_are_copied_verbatim
 yajlish-ndjson verify::selector_parse_never_panics_fuzz
 yajlish-ndjson verify::selector_round_trip
 yajlish-schema verify::float_multiple_of_never_panics

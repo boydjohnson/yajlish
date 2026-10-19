@@ -52,8 +52,14 @@
   - `Selector::Identifier` holds the decoded key (`"features"`, not
     `"\"features\""`), so `SelectorParser` output works directly and escaped
     keys match.
-  - `NdJsonHandler::finish()` reports write errors (no more panics),
-    `SelectorNotFound`, and numbers that cannot be written as JSON (`1e400`).
+  - `NdJsonHandler::finish()` reports write errors (no more panics) and
+    `SelectorNotFound`.
+  - Numbers are written byte for byte as the input spelled them, through
+    the new `Handler::handle_number`: `1.0`, `1e2` and `-0` keep their
+    spelling, `12345678901234567890` and long decimals keep their digits,
+    `1e-400` is no longer written as `0`, and `1e400` is written as is
+    instead of failing. `NonFiniteNumber` is now only returned when
+    `handle_double` is called directly with an infinite or NaN value.
   - The rest of the document is validated after the selected array; `stop_early()`
     restores the old behaviour.
   - An empty selected array writes nothing instead of a blank line.

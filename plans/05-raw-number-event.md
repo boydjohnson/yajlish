@@ -104,8 +104,8 @@ Nothing, unless they override `handle_number`. `MockHandler`, `Recorder`, the be
 
 | # | Deliverable | Done when |
 |---|---|---|
-| R1 | Core: `Number` public, `handle_number` with default, parser calls it, `Recorder` offset check, `val`/`raw` agreement test, docs on `Handler` and in `lib.rs` example, CHANGELOG entry | `cargo test --all`, Kani job and fuzz targets green; no other `Handler` impl edited |
-| R2 | ndjson: override `handle_number`, regression table, byte-exact differential, number fixture, `NonFiniteNumber` docs, CHANGELOG entry | All rows of the regression table pass; existing `.gold` files unchanged |
+| R1 | Core: `Number` public, `handle_number` with default, parser calls it, `Recorder` offset check, `val`/`raw` agreement test, docs on `Handler` and in `lib.rs` example, CHANGELOG entry | `cargo test --all`, Kani job and fuzz targets green; no other `Handler` impl edited. **Done**; the raw-at-offset check runs under Bolero and the exhaustive tests only, since Kani's `Recorder` harnesses have no input bytes (under Kani it checks `val` against `stub_number_value` instead) |
+| R2 | ndjson: override `handle_number`, regression table, byte-exact differential, number fixture, `NonFiniteNumber` docs, CHANGELOG entry | All rows of the regression table pass; existing `.gold` files unchanged. **Done**; the verbatim Bolero target checks whole output lines, not just number bytes |
 
 R1 and R2 can be one PR or two. Two is easier to review, because R1 should show no behaviour change at all.
 
