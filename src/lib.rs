@@ -78,6 +78,6 @@ mod parser;
 #[cfg(any(test, kani))]
 mod verify;
 
-pub use common::{Context, Enclosing, Handler, ParserStatus, Status};
+pub use common::{Context, Enclosing, Handler, Number, ParserStatus, Status};
 pub use decode::{decode_str, DecodeError};
 pub use parser::{ParseError, Parser};

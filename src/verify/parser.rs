@@ -18,11 +18,12 @@
 //! Proofs about the parser, and `Recorder`, the handler they use.
 
 use super::{for_each_split, same_result, Chunks};
-use crate::{Context, Enclosing, Handler, ParseError, Parser, Status};
+use crate::{Context, Enclosing, Handler, Number, ParseError, Parser, Status};
 
-/// One handler callback. Strings and keys are recorded by length; when it
-/// has the input, `Recorder` checks their text against it at the event's
-/// offset, so equal events at equal offsets mean equal text.
+/// One handler callback. Strings and keys are recorded by length, and a
+/// number's text length is kept beside its event (`Recorder::raw_lens`);
+/// when it has the input, `Recorder` checks all three against it at the
+/// event's offset, so equal events at equal offsets mean equal text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Event {
     Null,
@@ -55,6 +56,9 @@ pub(crate) enum Event {
 ///
 /// With `abort_at(i)`, the `i`th callback returns `Abort`, and any callback
 /// after it fails.
+///
+/// Numbers arrive through `handle_number` and are recorded as `Int` or
+/// `Double` from its `val`, as the default would pass them on.
 pub(crate) struct Recorder<'i, const N: usize> {
     /// The input, when the tokens came from bytes. Otherwise offsets are
     /// only checked against `end`.
@@ -65,6 +69,8 @@ pub(crate) struct Recorder<'i, const N: usize> {
     abort_at: Option<usize>,
     aborted: bool,
     events: [(Event, u64); N],
+    /// The length of each number event's raw text, 0 for other events.
+    raw_lens: [usize; N],
     len: usize,
     /// The open containers, innermost last.
     open: [Enclosing; N],
@@ -82,6 +88,7 @@ impl<'i, const N: usize> Recorder<'i, N> {
             abort_at: None,
             aborted: false,
             events: [(Event::Null, 0); N],
+            raw_lens: [0; N],
             len: 0,
             open: [Enclosing::LeftBrace; N],
             depth: 0,
@@ -108,6 +115,10 @@ impl<'i, const N: usize> Recorder<'i, N> {
         &self.events[..self.len]
     }
 
+    pub(crate) fn raw_lens(&self) -> &[usize] {
+        &self.raw_lens[..self.len]
+    }
+
     fn innermost(&self) -> Option<Enclosing> {
         self.depth.checked_sub(1).map(|i| self.open[i])
     }
@@ -132,6 +143,7 @@ impl<'i, const N: usize> Recorder<'i, N> {
         }
         assert!(self.len < N, "Recorder is full");
         self.events[self.len] = (event, offset);
+        self.raw_lens[self.len] = 0;
         self.len += 1;
 
         match event {
@@ -159,17 +171,22 @@ impl<'i, const N: usize> Recorder<'i, N> {
         Status::Continue
     }
 
-    /// Record a string or key, checking that it is the input's bytes at
-    /// `ctx.offset()`.
-    fn record_text(&mut self, ctx: &Context, val: &str, key: bool) -> Status {
+    /// Check that `raw` is the input's bytes at `ctx.offset()`.
+    fn check_text(&self, ctx: &Context, raw: &str) {
         if let Some(input) = self.input {
             let at = ctx.offset() as usize;
             assert_eq!(
-                input.get(at..at + val.len()),
-                Some(val.as_bytes()),
+                input.get(at..at + raw.len()),
+                Some(raw.as_bytes()),
                 "text is not the input at its offset"
             );
         }
+    }
+
+    /// Record a string or key, checking that it is the input's bytes at
+    /// `ctx.offset()`.
+    fn record_text(&mut self, ctx: &Context, val: &str, key: bool) -> Status {
+        self.check_text(ctx, val);
         let len = val.len();
         self.record(
             ctx,
@@ -191,6 +208,26 @@ impl<const N: usize> Handler for Recorder<'_, N> {
     }
     fn handle_int(&mut self, ctx: &Context, val: i64) -> Status {
         self.record(ctx, Event::Int(val))
+    }
+    fn handle_number(&mut self, ctx: &Context, raw: &str, val: Number) -> Status {
+        self.check_text(ctx, raw);
+        assert!(!raw.is_empty(), "empty number text");
+        // Without input the tokens came from Kani's token sequences, where
+        // `stub_number_value` makes the value the text's length.
+        #[cfg(kani)]
+        if self.input.is_none() {
+            let len = raw.len() as u64;
+            match val {
+                Number::Int(i) => assert_eq!(i as u64, len, "val is not raw's"),
+                Number::Double(d) => assert_eq!(d.to_bits(), len, "val is not raw's"),
+            }
+        }
+        let status = match val {
+            Number::Int(i) => self.handle_int(ctx, i),
+            Number::Double(d) => self.handle_double(ctx, d),
+        };
+        self.raw_lens[self.len - 1] = raw.len();
+        status
     }
     fn handle_bool(&mut self, ctx: &Context, val: bool) -> Status {
         self.record(ctx, Event::Bool(val))
@@ -225,8 +262,8 @@ pub(crate) fn stub_number_value(
     kind: crate::lexer::Token,
     text: &str,
     _offset: u64,
-) -> Result<crate::parser::Number, ParseError> {
-    use crate::parser::Number;
+) -> Result<crate::Number, ParseError> {
+    use crate::Number;
     let len = text.len() as u64;
     Ok(if kind == crate::lexer::Token::Int {
         Number::Int(len as i64)
@@ -254,6 +291,7 @@ fn check_chunked_parse_is_invisible<const N: usize>(input: &[u8], sizes: &[usize
     let (chunked, chunked_result) = parse_chunked::<N>(input, sizes, false);
     let (whole, whole_result) = parse_chunked::<N>(input, &[], false);
     assert_eq!(chunked.events(), whole.events());
+    assert_eq!(chunked.raw_lens(), whole.raw_lens());
     assert!(
         same_result(&chunked_result, &whole_result),
         "{:?} vs {:?}",
@@ -293,6 +331,7 @@ fn check_split_across_parse_calls<const N: usize>(input: &[u8], cuts: &[usize]) 
     let (split, split_result) = parse_in_calls::<N>(input, cuts);
     let (whole, whole_result) = parse_in_calls::<N>(input, &[]);
     assert_eq!(split.events(), whole.events(), "cuts {:?}", cuts);
+    assert_eq!(split.raw_lens(), whole.raw_lens(), "cuts {:?}", cuts);
     assert!(
         same_result(&split_result, &whole_result),
         "cuts {:?}: {:?} vs {:?}",
@@ -360,6 +399,150 @@ fn chunked_parse_is_invisible_fuzz() {
         });
 }
 
+/// The value `raw` should arrive with: `Int` if it is an integer that fits
+/// in `i64`, otherwise the nearest `f64`. Classifies by the text, not by
+/// the lexer's token kind.
+fn expected_number(raw: &str) -> Number {
+    if !raw.contains(['.', 'e', 'E']) {
+        if let Ok(i) = raw.parse::<i64>() {
+            return Number::Int(i);
+        }
+    }
+    Number::Double(raw.parse::<f64>().expect("number text parses as f64"))
+}
+
+/// Checks every `handle_number` call's `val` against `expected_number(raw)`
+/// and keeps the raw texts.
+#[derive(Default)]
+struct NumberCheck {
+    raws: Vec<String>,
+}
+
+impl Handler for NumberCheck {
+    fn handle_number(&mut self, _ctx: &Context, raw: &str, val: Number) -> Status {
+        let same = match (val, expected_number(raw)) {
+            (Number::Int(a), Number::Int(b)) => a == b,
+            (Number::Double(a), Number::Double(b)) => a.to_bits() == b.to_bits(),
+            _ => false,
+        };
+        assert!(same, "{:?} for {:?}", val, raw);
+        self.raws.push(raw.to_owned());
+        Status::Continue
+    }
+    fn handle_null(&mut self, _ctx: &Context) -> Status {
+        Status::Continue
+    }
+    fn handle_double(&mut self, _ctx: &Context, _val: f64) -> Status {
+        unreachable!("numbers arrive through handle_number")
+    }
+    fn handle_int(&mut self, _ctx: &Context, _val: i64) -> Status {
+        unreachable!("numbers arrive through handle_number")
+    }
+    fn handle_bool(&mut self, _ctx: &Context, _val: bool) -> Status {
+        Status::Continue
+    }
+    fn handle_string(&mut self, _ctx: &Context, _val: &str) -> Status {
+        Status::Continue
+    }
+    fn handle_start_map(&mut self, _ctx: &Context) -> Status {
+        Status::Continue
+    }
+    fn handle_end_map(&mut self, _ctx: &Context) -> Status {
+        Status::Continue
+    }
+    fn handle_map_key(&mut self, _ctx: &Context, _key: &str) -> Status {
+        Status::Continue
+    }
+    fn handle_start_array(&mut self, _ctx: &Context) -> Status {
+        Status::Continue
+    }
+    fn handle_end_array(&mut self, _ctx: &Context) -> Status {
+        Status::Continue
+    }
+}
+
+/// Parse `input` in chunks of `sizes` with a `NumberCheck`.
+fn check_numbers(input: &[u8], sizes: &[usize]) -> (Vec<String>, Result<(), ParseError>) {
+    let mut check = NumberCheck::default();
+    let mut parser = Parser::new(&mut check);
+    let result = parser
+        .parse(&mut Chunks::new(input, sizes))
+        .and_then(|()| parser.finish_parse());
+    (check.raws, result)
+}
+
+/// Sign, integer digits, fraction digits, and exponent form and digits.
+type NumberParts = (bool, Vec<u8>, Option<Vec<u8>>, Option<(u8, Vec<u8>)>);
+
+/// RFC 8259 number text from arbitrary parts: optional `-`, an integer
+/// part (`0` when empty, no leading zeros), an optional fraction and an
+/// optional exponent of either case and any sign. Up to 40 digits before
+/// and after the point, so mantissas go past `i64` and `f64` precision,
+/// and up to 5 exponent digits, so values overflow and underflow.
+fn number_text((neg, int, frac, exp): &NumberParts) -> String {
+    let digits = |v: &[u8], max: usize| -> String {
+        let v = if v.is_empty() {
+            &[0][..]
+        } else {
+            &v[..v.len().min(max)]
+        };
+        v.iter().map(|d| char::from(b'0' + d % 10)).collect()
+    };
+    let mut text = String::new();
+    if *neg {
+        text.push('-');
+    }
+    match int.split_first() {
+        None => text.push('0'),
+        Some((first, rest)) => {
+            text.push(char::from(b'1' + first % 9));
+            text.extend(rest.iter().take(39).map(|d| char::from(b'0' + d % 10)));
+        }
+    }
+    if let Some(frac) = frac {
+        text.push('.');
+        text.push_str(&digits(frac, 40));
+    }
+    if let Some((form, exp)) = exp {
+        text.push(if form & 1 == 0 { 'e' } else { 'E' });
+        text.push_str(["", "+", "-"][usize::from(form >> 1) % 3]);
+        text.push_str(&digits(exp, 5));
+    }
+    text
+}
+
+/// Every number reaches `handle_number` whole, as its input text, with the
+/// value that text converts to. Inside an array and as a bare document,
+/// read whole and split in two.
+// Not a Kani proof: float parsing is too large (see `stub_number_value`).
+#[test]
+fn number_val_matches_raw() {
+    bolero::check!()
+        .with_type::<(NumberParts, u8)>()
+        .for_each(|(parts, split)| {
+            let text = number_text(parts);
+            for input in [format!("[{}]", text), text.clone()] {
+                let input = input.as_bytes();
+                let split = usize::from(*split) % (input.len() + 1);
+                for sizes in [&[][..], &[split]] {
+                    let (raws, result) = check_numbers(input, sizes);
+                    assert_eq!(result, Ok(()), "{:?}", text);
+                    assert_eq!(raws, [text.as_str()]);
+                }
+            }
+        });
+}
+
+/// `number_val_matches_raw` on any input: every number event that arrives
+/// has the value of its text.
+#[test]
+fn number_val_matches_raw_fuzz() {
+    // Raw bytes, so that the seed corpus (JSON files) is the input.
+    bolero::check!().for_each(|input: &[u8]| {
+        let _ = check_numbers(&input[..input.len().min(256)], &[]);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,6 +592,43 @@ mod tests {
                 (Event::EndArray, 3)
             ]
         );
+    }
+
+    /// The numbers Plan 5 names, read whole and one byte at a time.
+    #[test]
+    fn number_raw_text_is_the_input() {
+        let numbers = [
+            "1.0",
+            "100.50",
+            "1e2",
+            "1.5e-7",
+            "-0",
+            "-0.0",
+            "0E0",
+            "1.5E+07",
+            "12345678901234567890",
+            "3.141592653589793238462643383279",
+            "1e-400",
+            "1e400",
+            "-9223372036854775808",
+            "9223372036854775808",
+        ];
+        let input = format!("[{}]", numbers.join(", "));
+        let bytes = vec![1; input.len()];
+        for sizes in [&[][..], &bytes] {
+            let (raws, result) = check_numbers(input.as_bytes(), sizes);
+            assert_eq!(result, Ok(()));
+            assert_eq!(raws, numbers);
+        }
+        let (recorder, result) = parse_chunked::<32>(input.as_bytes(), &bytes, true);
+        assert_eq!(result, Ok(()));
+        let lens: Vec<usize> = recorder.raw_lens()[1..=numbers.len()].to_vec();
+        assert_eq!(lens, numbers.map(str::len));
+        assert_eq!(
+            recorder.events()[12].0,
+            Event::Double(f64::INFINITY.to_bits())
+        );
+        assert_eq!(recorder.events()[13].0, Event::Int(i64::MIN));
     }
 
     /// The strict checks hold on valid documents, so a failure under Kani

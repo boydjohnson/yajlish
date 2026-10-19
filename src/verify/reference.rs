@@ -30,8 +30,8 @@
 use super::{as_utf8, parser::Event};
 use crate::{
     lexer::{Lexed, Token},
-    parser::{number_value, Number, TokenSource},
-    Enclosing,
+    parser::{number_value, TokenSource},
+    Enclosing, Number,
 };
 
 /// What the automaton accepts next.

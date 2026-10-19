@@ -38,6 +38,11 @@
   (`Parser::with_max_token_len`).
 - Tokens split across reads lex the same as unsplit input.
 - New `decode_str` decodes the raw string text handlers receive.
+- New `Handler::handle_number(ctx, raw, val)` gives a number's JSON text
+  exactly as it appeared in the input, along with its value as a new public
+  `Number` enum (`Int(i64)` or `Double(f64)`, `#[non_exhaustive]`). The
+  default calls `handle_int` or `handle_double` with the same values as
+  before, so existing handlers need no change.
 - New `Context::offset`, the byte offset of the current event.
 - About 3x faster on the bundled fixtures.
 

@@ -11,6 +11,7 @@ yajlish@0.5.0 verify::decode::lexer_and_decoder_agree_fuzz
 yajlish@0.5.0 verify::lexer::chunking_is_invisible_fuzz
 yajlish@0.5.0 verify::lexer::offsets_are_monotone_fuzz
 yajlish@0.5.0 verify::parser::chunked_parse_is_invisible_fuzz
+yajlish@0.5.0 verify::parser::number_val_matches_raw_fuzz
 yajlish@0.5.0 verify::parser::split_across_parse_calls_fuzz
 yajlish@0.5.0 verify::ref_lexer::ref_lexer_matches_logos_fuzz
 yajlish@0.5.0 verify::state_machine::accepts_all_valid_json_fuzz
