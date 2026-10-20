@@ -161,6 +161,17 @@ impl Context {
     }
 }
 
+/// The value of a number token, as `Handler::handle_number` receives it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum Number {
+    /// The text is an integer that fits in `i64`.
+    Int(i64),
+    /// Any other number, converted to the nearest `f64`. It may be rounded,
+    /// infinite (`1e400`) or zero (`1e-400`).
+    Double(f64),
+}
+
 /// Implement this trait to handle parse events.
 pub trait Handler {
     /// Latest parsed value was a null.
@@ -171,6 +182,25 @@ pub trait Handler {
 
     /// Latest parsed value was an int.
     fn handle_int(&mut self, ctx: &Context, val: i64) -> Status;
+
+    /// Latest parsed value was a number.
+    ///
+    /// `raw` is the number's JSON text exactly as it appeared in the input,
+    /// for example `"-1.50e+3"`. `val` is the same number converted the way
+    /// `handle_int` and `handle_double` receive it: `Number::Int` if the text
+    /// is an integer that fits in `i64`, otherwise `Number::Double`, which
+    /// may be rounded, infinite or zero. Other crates, such as
+    /// `yajlish-ndjson`, can use `raw` to re-emit numbers verbatim.
+    ///
+    /// The default calls `handle_int` or `handle_double`, so a handler that
+    /// doesn't need the text can ignore this method.
+    fn handle_number(&mut self, ctx: &Context, raw: &str, val: Number) -> Status {
+        let _ = raw;
+        match val {
+            Number::Int(i) => self.handle_int(ctx, i),
+            Number::Double(d) => self.handle_double(ctx, d),
+        }
+    }
 
     /// Latest parsed value was a bool.
     fn handle_bool(&mut self, ctx: &Context, val: bool) -> Status;

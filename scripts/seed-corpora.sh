@@ -34,6 +34,7 @@ for target in parser_never_panics context_invariants_hold accepts_only_valid_jso
     seed "$core/verify__state_machine__$target" "${json_sources[@]}"
 done
 seed "$core/verify__ref_lexer__ref_lexer_matches_logos" "${json_sources[@]}"
+seed "$core/verify__parser__number_val_matches_raw" "${json_sources[@]}"
 seed "$core/verify__tests__utf8_check_matches_std" tests/json_test_suite/test_parsing
 
 seed yajlish-ndjson/src/__fuzz__/verify__ndjson_never_panics \

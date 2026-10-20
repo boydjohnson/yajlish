@@ -20,7 +20,7 @@
 use crate::{
     common::{Enclosing, ParserStatus},
     lexer::{LexBuffer, Lexed, StreamLexer, Token, DEFAULT_MAX_TOKEN_LEN},
-    Context, Handler, Status,
+    Context, Handler, Number, Status,
 };
 use std::io::BufRead;
 
@@ -215,10 +215,8 @@ impl<'a, H: Handler> Parser<'a, H> {
                                     offset: offset + e.valid_up_to() as u64,
                                     msg: e.to_string(),
                                 })?;
-                            match number_value(kind, text, offset)? {
-                                Number::Int(num) => self.handler.handle_int(context, num),
-                                Number::Double(num) => self.handler.handle_double(context, num),
-                            }
+                            let num = number_value(kind, text, offset)?;
+                            self.handler.handle_number(context, text, num)
                         }
                     };
                     after_value(context);
@@ -385,13 +383,6 @@ impl std::fmt::Display for ParseError {
             }
         }
     }
-}
-
-/// The value of a number token.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum Number {
-    Int(i64),
-    Double(f64),
 }
 
 /// The value of an `Int` or `Number` token whose text is `text`, found at

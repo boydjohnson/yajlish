@@ -25,6 +25,15 @@ fn test_custom_json() {
 }
 
 #[test]
+fn test_numbers_json() {
+    test_ndjson_fixture(
+        PATH,
+        "numbers.json",
+        vec![Selector::Identifier("readings".to_owned())],
+    );
+}
+
+#[test]
 fn test_fixtures_split_invariant() {
     test_ndjson_fixture_split(
         PATH,
@@ -35,6 +44,11 @@ fn test_fixtures_split_invariant() {
         PATH,
         "prize.json",
         vec![Selector::Identifier("prizes".to_owned())],
+    );
+    test_ndjson_fixture_split(
+        PATH,
+        "numbers.json",
+        vec![Selector::Identifier("readings".to_owned())],
     );
 }
 
@@ -60,6 +74,7 @@ fn test_selector_parser_output_matches_fixtures() {
     for (file, selector) in [
         ("custom.geo.json", "d.features"),
         ("prize.json", "d.prizes"),
+        ("numbers.json", "d.readings"),
     ] {
         let input = read_input_to_bytes(PATH, file);
         let gold = std::fs::read(format!("tests/{}/{}.gold", PATH, file)).unwrap();
@@ -104,15 +119,64 @@ fn test_malformed_tail_is_rejected() {
     assert_eq!(handler.finish().unwrap(), b"1\n2\n");
 }
 
+/// Numbers are written as the input spelled them (Plan 5): the first five
+/// used to be respelled, the next four changed value, and `1e400` was
+/// refused as `NonFiniteNumber`.
 #[test]
-fn test_non_finite_double_is_rejected() {
-    let (_, out) = convert(b"{\"features\": [1, 1e400]}", "d.features");
-    assert!(matches!(out, Err(NdJsonError::NonFiniteNumber)));
+fn test_numbers_are_copied_verbatim() {
+    for number in [
+        "1.0",
+        "100.50",
+        "1e2",
+        "1.5e-7",
+        "-0",
+        "12345678901234567890",
+        "3.141592653589793238462643383279",
+        "1e-400",
+        "1e400",
+        "-0.0",
+        "0E0",
+        "-9223372036854775808",
+        "9223372036854775808",
+        "1.5E+07",
+    ] {
+        let input = format!("{{\"features\": [{}]}}", number);
+        let (parsed, out) = convert(input.as_bytes(), "d.features");
+        assert_eq!(parsed, Ok(()), "{}", number);
+        assert_eq!(
+            String::from_utf8(out.unwrap()).unwrap(),
+            format!("{}\n", number)
+        );
+    }
+}
 
-    // Outside the selected array it does not matter.
-    let (parsed, out) = convert(b"{\"x\": 1e400, \"features\": [1]}", "d.features");
+/// Nested inside a selected element, too.
+#[test]
+fn test_nested_numbers_are_copied_verbatim() {
+    let input = br#"{"features": [{"a": [1.50, -0, {"b": 1E400}]}, [2e-0]]}"#;
+    let (parsed, out) = convert(input, "d.features");
     assert_eq!(parsed, Ok(()));
-    assert_eq!(out.unwrap(), b"1\n");
+    assert_eq!(out.unwrap(), b"{\"a\":[1.50,-0,{\"b\":1E400}]}\n[2e-0]\n");
+}
+
+/// The parser now delivers numbers through `handle_number`, so
+/// `NonFiniteNumber` only comes from calling `handle_double` directly.
+#[test]
+fn test_non_finite_double_is_rejected_when_called_directly() {
+    use yajlish::{Context, Handler, Status};
+    let selectors = SelectorParser::new().parse("d.features").unwrap();
+    let mut handler = NdJsonHandler::new(vec![], selectors);
+    // Into the selected array, then call the handler directly; any context
+    // will do.
+    Parser::new(&mut handler)
+        .parse(&mut &b"{\"features\": ["[..])
+        .unwrap();
+    let ctx = Context::default();
+    assert_eq!(handler.handle_double(&ctx, f64::INFINITY), Status::Abort);
+    assert!(matches!(
+        handler.finish(),
+        Err(NdJsonError::NonFiniteNumber)
+    ));
 }
 
 /// A writer that accepts `budget` bytes, then fails.
@@ -143,6 +207,7 @@ fn test_write_errors_are_returned_not_panicked() {
     for (file, selector) in [
         ("custom.geo.json", "d.features"),
         ("prize.json", "d.prizes"),
+        ("numbers.json", "d.readings"),
     ] {
         let input = read_input_to_bytes(PATH, file);
         let gold_len = std::fs::read(format!("tests/{}/{}.gold", PATH, file))

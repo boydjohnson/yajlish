@@ -38,6 +38,11 @@
   (`Parser::with_max_token_len`).
 - Tokens split across reads lex the same as unsplit input.
 - New `decode_str` decodes the raw string text handlers receive.
+- New `Handler::handle_number(ctx, raw, val)` gives a number's JSON text
+  exactly as it appeared in the input, along with its value as a new public
+  `Number` enum (`Int(i64)` or `Double(f64)`, `#[non_exhaustive]`). The
+  default calls `handle_int` or `handle_double` with the same values as
+  before, so existing handlers need no change.
 - New `Context::offset`, the byte offset of the current event.
 - About 3x faster on the bundled fixtures.
 
@@ -47,8 +52,14 @@
   - `Selector::Identifier` holds the decoded key (`"features"`, not
     `"\"features\""`), so `SelectorParser` output works directly and escaped
     keys match.
-  - `NdJsonHandler::finish()` reports write errors (no more panics),
-    `SelectorNotFound`, and numbers that cannot be written as JSON (`1e400`).
+  - `NdJsonHandler::finish()` reports write errors (no more panics) and
+    `SelectorNotFound`.
+  - Numbers are written byte for byte as the input spelled them, through
+    the new `Handler::handle_number`: `1.0`, `1e2` and `-0` keep their
+    spelling, `12345678901234567890` and long decimals keep their digits,
+    `1e-400` is no longer written as `0`, and `1e400` is written as is
+    instead of failing. `NonFiniteNumber` is now only returned when
+    `handle_double` is called directly with an infinite or NaN value.
   - The rest of the document is validated after the selected array; `stop_early()`
     restores the old behaviour.
   - An empty selected array writes nothing instead of a blank line.

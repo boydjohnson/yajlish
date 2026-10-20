@@ -3,7 +3,7 @@
 //!
 
 use std::io::Write;
-use yajlish::{decode_str, Context, Handler, ParserStatus, Status};
+use yajlish::{decode_str, Context, Handler, Number, ParserStatus, Status};
 
 /// Writes each element of the selected array as one line of `OUT`.
 ///
@@ -32,7 +32,10 @@ pub enum NdJsonError {
     /// The selected key or index never appeared, or the value it selected
     /// is not an array.
     SelectorNotFound,
-    /// A number too large for `f64`, which cannot be written as JSON.
+    /// `handle_double` was called directly with an infinite or NaN value,
+    /// which cannot be written as JSON. Parsing never returns this: numbers
+    /// from the parser arrive through `handle_number` and are copied as
+    /// their input text, so `1e400` is written as `1e400`.
     NonFiniteNumber,
 }
 
@@ -262,8 +265,9 @@ where
     /// The output, or the error that stopped the conversion.
     ///
     /// # Errors
-    /// `Io` if a write failed, `NonFiniteNumber` for a number that cannot be
-    /// written as JSON, `SelectorNotFound` if no array was selected.
+    /// `Io` if a write failed, `SelectorNotFound` if no array was selected,
+    /// `NonFiniteNumber` if `handle_double` was called directly with a
+    /// value that cannot be written as JSON.
     pub fn finish(self) -> Result<OUT, NdJsonError> {
         if let Some(e) = self.sink.error {
             return Err(e);
@@ -441,6 +445,12 @@ impl<OUT: Write> Handler for NdJsonHandler<OUT> {
 
     fn handle_int(&mut self, ctx: &Context, val: i64) -> Status {
         self.handle_value(ctx, val)
+    }
+
+    /// Writes `raw`, the number exactly as the input spelled it. The parser
+    /// only delivers RFC 8259 numbers, so it is always valid JSON.
+    fn handle_number(&mut self, ctx: &Context, raw: &str, _val: Number) -> Status {
+        self.handle_value(ctx, raw)
     }
 
     fn handle_bool(&mut self, ctx: &Context, val: bool) -> Status {
