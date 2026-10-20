@@ -102,6 +102,11 @@ pub mod ir;
 #[doc = include_str!("../../README.md")]
 struct ReadmeDoctests;
 
+/// This crate's README examples, run as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct CrateReadmeDoctests;
+
 mod error;
 mod matcher;
 mod num;

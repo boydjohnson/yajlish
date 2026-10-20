@@ -498,6 +498,11 @@ pub enum Selector {
 }
 
 pub mod selector_parser;
+
+/// The README's examples, run as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 #[cfg(any(test, kani))]
 mod verify;
 
