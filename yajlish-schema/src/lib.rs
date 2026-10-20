@@ -96,6 +96,12 @@
 
 pub mod ir;
 
+/// The workspace README's examples, run as doctests here: this is the one
+/// crate that can depend on all three.
+#[cfg(doctest)]
+#[doc = include_str!("../../README.md")]
+struct ReadmeDoctests;
+
 mod error;
 mod matcher;
 mod num;
