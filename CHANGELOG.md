@@ -1,6 +1,6 @@
 # Changelog
 
-## yajlish 0.5.0, yajlish-ndjson 0.1.0, yajlish-schema 0.1.0 (unreleased)
+## yajlish 0.5.0, yajlish-ndjson 0.1.0, yajlish-schema 0.1.0 (2026-10-20)
 
 ### yajlish
 
