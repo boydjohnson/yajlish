@@ -22,6 +22,8 @@ pattern = ["dep:regex", "yajlish-schema-macros/pattern"]
 serde = ["dep:serde", "yajlish-schema-macros/serde"]
 
 [dev-dependencies]
+# The workspace README's examples run as doctests of this crate.
+yajlish-ndjson = { path = "../yajlish-ndjson" }
 bolero = "0.13.7"
 criterion = { version = "0.5", default-features = false }
 pretty_assertions.workspace = true

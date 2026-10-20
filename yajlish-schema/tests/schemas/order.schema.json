@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "An order, as used in the README examples.",
+  "type": "object",
+  "required": ["id", "customer", "amount"],
+  "properties": {
+    "id": { "type": "integer" },
+    "customer": { "type": "string", "minLength": 1 },
+    "amount": { "type": "number", "minimum": 0 },
+    "note": { "type": "string" }
+  },
+  "additionalProperties": false
+}
